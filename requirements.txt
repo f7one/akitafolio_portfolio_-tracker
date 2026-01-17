@@ -3,6 +3,3 @@ web3==6.15.1
 python-dotenv==1.0.0
 requests==2.31.0
 aiohttp==3.9.1
-solders==0.21.0
-solana==0.34.3
-base58==2.1.1

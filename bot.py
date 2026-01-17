@@ -9,11 +9,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from web3 import Web3
 import requests
 from dotenv import load_dotenv
-from solana.rpc.api import Client as SolanaClient
-from solana.rpc.commitment import Confirmed
-from solders.pubkey import Pubkey as SolanaPubkey
-import base58
-import struct
 
 # Load environment variables
 load_dotenv()
@@ -28,10 +23,6 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 INFURA_PROJECT_ID = os.getenv('INFURA_PROJECT_ID', 'df20b3f6760a45ea87562328e8b02e19')
-SOLANA_RPC_URL = os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
-
-# Marginfi Program ID (used by 0.xyz)
-MARGINFI_PROGRAM_ID = "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"
 
 # Storage files
 STORAGE_FILE = Path(__file__).parent / 'saved_addresses.json'
@@ -110,6 +101,104 @@ web3_instances = {
     for chain, config in ALL_CHAINS.items()
 }
 
+# ERC20 ABI (minimal - for balance checking)
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    }
+]
+
+# Popular tokens to track by default (can be customized per user)
+DEFAULT_TOKENS = {
+    'ethereum': [
+        {'symbol': 'USDT', 'address': '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'decimals': 6, 'coingecko_id': 'tether'},
+        {'symbol': 'USDC', 'address': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 'decimals': 6, 'coingecko_id': 'usd-coin'},
+        {'symbol': 'DAI', 'address': '0x6B175474E89094C44Da98b954EedeAC495271d0F', 'decimals': 18, 'coingecko_id': 'dai'},
+        {'symbol': 'WETH', 'address': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 'decimals': 18, 'coingecko_id': 'weth'},
+        {'symbol': 'WBTC', 'address': '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', 'decimals': 8, 'coingecko_id': 'wrapped-bitcoin'},
+        {'symbol': 'LINK', 'address': '0x514910771AF9Ca656af840dff83E8264EcF986CA', 'decimals': 18, 'coingecko_id': 'chainlink'},
+        {'symbol': 'UNI', 'address': '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', 'decimals': 18, 'coingecko_id': 'uniswap'},
+        {'symbol': 'AAVE', 'address': '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', 'decimals': 18, 'coingecko_id': 'aave'},
+    ],
+    'base': [
+        {'symbol': 'USDC', 'address': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', 'decimals': 6, 'coingecko_id': 'usd-coin'},
+    ],
+    'arbitrum': [
+        {'symbol': 'USDC', 'address': '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', 'decimals': 6, 'coingecko_id': 'usd-coin'},
+        {'symbol': 'USDT', 'address': '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', 'decimals': 6, 'coingecko_id': 'tether'},
+    ],
+    'optimism': [
+        {'symbol': 'USDC', 'address': '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', 'decimals': 6, 'coingecko_id': 'usd-coin'},
+        {'symbol': 'USDT', 'address': '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', 'decimals': 6, 'coingecko_id': 'tether'},
+    ],
+    'polygon': [
+        {'symbol': 'USDC', 'address': '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', 'decimals': 6, 'coingecko_id': 'usd-coin'},
+        {'symbol': 'USDT', 'address': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', 'decimals': 6, 'coingecko_id': 'tether'},
+    ],
+}
+
+# DeFi Protocol ABIs
+AAVE_V3_POOL_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "user", "type": "address"}],
+        "name": "getUserAccountData",
+        "outputs": [
+            {"internalType": "uint256", "name": "totalCollateralBase", "type": "uint256"},
+            {"internalType": "uint256", "name": "totalDebtBase", "type": "uint256"},
+            {"internalType": "uint256", "name": "availableBorrowsBase", "type": "uint256"},
+            {"internalType": "uint256", "name": "currentLiquidationThreshold", "type": "uint256"},
+            {"internalType": "uint256", "name": "ltv", "type": "uint256"},
+            {"internalType": "uint256", "name": "healthFactor", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# DeFi Protocol Addresses
+DEFI_PROTOCOLS = {
+    'ethereum': {
+        'aave_v3_pool': '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+    },
+    'arbitrum': {
+        'aave_v3_pool': '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    },
+    'optimism': {
+        'aave_v3_pool': '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    },
+    'base': {
+        'aave_v3_pool': '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
+    },
+    'polygon': {
+        'aave_v3_pool': '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    },
+}
+
 
 # Storage Functions
 
@@ -119,17 +208,37 @@ def load_saved_addresses(user_id: int) -> dict:
         if STORAGE_FILE.exists():
             with open(STORAGE_FILE, 'r') as f:
                 data = json.load(f)
-                user_data = data.get(str(user_id), {'eth': [], 'btc': [], 'xpub': [], 'sol': []})
+                user_data = data.get(str(user_id), {
+                    'eth': [], 
+                    'btc': [], 
+                    'xpub': [],
+                    'tokens': [],  # Custom tokens to track
+                    'track_defi': True  # Track DeFi positions by default
+                })
                 # Ensure all keys exist for backward compatibility
                 if 'xpub' not in user_data:
                     user_data['xpub'] = []
-                if 'sol' not in user_data:
-                    user_data['sol'] = []
+                if 'tokens' not in user_data:
+                    user_data['tokens'] = []
+                if 'track_defi' not in user_data:
+                    user_data['track_defi'] = True
                 return user_data
-        return {'eth': [], 'btc': [], 'xpub': [], 'sol': []}
+        return {
+            'eth': [], 
+            'btc': [], 
+            'xpub': [],
+            'tokens': [],
+            'track_defi': True
+        }
     except Exception as e:
         logger.error(f"Error loading saved addresses: {e}")
-        return {'eth': [], 'btc': [], 'xpub': [], 'sol': []}
+        return {
+            'eth': [], 
+            'btc': [], 
+            'xpub': [],
+            'tokens': [],
+            'track_defi': True
+        }
 
 
 def save_addresses(user_id: int, addresses: dict):
@@ -164,7 +273,7 @@ def load_portfolio_history(user_id: int) -> list:
         return []
 
 
-def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: float, btc_amount: float, sol_amount: float, eth_price: float, btc_price: float, sol_price: float):
+def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: float, btc_amount: float, eth_price: float, btc_price: float):
     """Save a portfolio snapshot for historical tracking."""
     try:
         data = {}
@@ -180,10 +289,8 @@ def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: fl
             'total_value_usd': total_value_usd,
             'eth_amount': eth_amount,
             'btc_amount': btc_amount,
-            'sol_amount': sol_amount,
             'eth_price': eth_price,
-            'btc_price': btc_price,
-            'sol_price': sol_price
+            'btc_price': btc_price
         }
         
         user_history.append(snapshot)
@@ -286,18 +393,6 @@ def is_valid_bitcoin_address(address: str) -> bool:
     return False
 
 
-def is_valid_solana_address(address: str) -> bool:
-    """Validate Solana address format."""
-    try:
-        if not address or len(address) < 32 or len(address) > 44:
-            return False
-        # Try to create a Pubkey - will raise if invalid
-        SolanaPubkey.from_string(address)
-        return True
-    except:
-        return False
-
-
 def is_valid_xpub(xpub: str) -> bool:
     """Validate xpub/ypub/zpub format."""
     if not xpub:
@@ -316,23 +411,22 @@ def is_valid_xpub(xpub: str) -> bool:
 
 
 async def get_crypto_prices() -> dict:
-    """Fetch current ETH, BTC, and SOL prices in USD from CoinGecko API."""
+    """Fetch current ETH and BTC prices in USD from CoinGecko API."""
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin,solana&vs_currencies=usd"
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd"
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             return {
                 'eth': float(data.get('ethereum', {}).get('usd', 0)),
-                'btc': float(data.get('bitcoin', {}).get('usd', 0)),
-                'sol': float(data.get('solana', {}).get('usd', 0))
+                'btc': float(data.get('bitcoin', {}).get('usd', 0))
             }
         else:
             logger.warning(f"Failed to fetch crypto prices: {response.status_code}")
-            return {'eth': 0.0, 'btc': 0.0, 'sol': 0.0}
+            return {'eth': 0.0, 'btc': 0.0}
     except Exception as e:
         logger.error(f"Error fetching crypto prices: {e}")
-        return {'eth': 0.0, 'btc': 0.0, 'sol': 0.0}
+        return {'eth': 0.0, 'btc': 0.0}
 
 
 async def get_chain_balance(address: str, chain: str) -> dict:
@@ -423,178 +517,6 @@ async def get_bitcoin_balance(address: str) -> dict:
         return {"error": f"Failed to fetch Bitcoin balance: {str(e)}"}
 
 
-async def get_solana_balance(address: str) -> dict:
-    """Fetch Solana wallet balance."""
-    try:
-        if not is_valid_solana_address(address):
-            return {"error": "Invalid Solana address"}
-        
-        # Initialize Solana client
-        client = SolanaClient(SOLANA_RPC_URL)
-        
-        # Get balance
-        pubkey = SolanaPubkey.from_string(address)
-        response = client.get_balance(pubkey)
-        
-        if response.value is not None:
-            # Convert lamports to SOL (1 SOL = 1,000,000,000 lamports)
-            balance_sol = response.value / 1_000_000_000
-            
-            return {
-                "success": True,
-                "address": address,
-                "balance": balance_sol,
-                "currency": "SOL"
-            }
-        else:
-            return {"error": "Failed to fetch balance"}
-    
-    except Exception as e:
-        logger.error(f"Error fetching Solana balance: {e}")
-        return {"error": f"Failed to fetch Solana balance: {str(e)}"}
-
-
-async def get_marginfi_positions(address: str) -> dict:
-    """Fetch DeFi positions from marginfi (0.xyz) by parsing on-chain accounts."""
-    try:
-        if not is_valid_solana_address(address):
-            return {"error": "Invalid Solana address"}
-        
-        # Initialize Solana client
-        client = SolanaClient(SOLANA_RPC_URL)
-        user_pubkey = SolanaPubkey.from_string(address)
-        marginfi_program = SolanaPubkey.from_string(MARGINFI_PROGRAM_ID)
-        
-        # Find marginfi accounts for this user using getProgramAccounts
-        # We look for accounts owned by the marginfi program that are related to this user
-        try:
-            # Get all accounts owned by marginfi program filtered by user
-            from solders.rpc.requests import GetProgramAccounts
-            from solders.rpc.config import RpcAccountInfoConfig
-            from solana.rpc.commitment import Confirmed
-            
-            # Try to find marginfi accounts associated with this user
-            # Marginfi accounts have a specific discriminator and user authority field
-            
-            # Get all token accounts owned by the user to check for marginfi positions
-            response = client.get_token_accounts_by_owner(
-                user_pubkey,
-                {"programId": SolanaPubkey.from_string("TokenkgQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")},
-                commitment=Confirmed
-            )
-            
-            supplies = []
-            borrows = []
-            total_supply_usd = 0
-            total_borrow_usd = 0
-            
-            # Get SOL price for calculations
-            prices = await get_crypto_prices()
-            sol_price = prices.get('sol', 0)
-            
-            # Try to fetch user's marginfi account data directly
-            # Marginfi uses a PDA (Program Derived Address) pattern
-            # We need to derive the user's marginfi account address
-            
-            # Common seeds for marginfi accounts: ["marginfi_account", user_pubkey, account_index]
-            # Let's try to find accounts with index 0, 1, 2 (most users have 0-2 accounts)
-            
-            has_positions = False
-            
-            for account_index in range(5):  # Check first 5 possible accounts
-                try:
-                    # Derive marginfi account PDA
-                    seeds = [
-                        b"marginfi_account",
-                        bytes(user_pubkey),
-                        account_index.to_bytes(8, 'little')
-                    ]
-                    
-                    # Find PDA
-                    marginfi_account, bump = SolanaPubkey.find_program_address(seeds, marginfi_program)
-                    
-                    # Try to fetch account data
-                    account_info = client.get_account_info(marginfi_account, commitment=Confirmed)
-                    
-                    if account_info.value is None:
-                        continue  # Account doesn't exist
-                    
-                    # Parse account data
-                    data = account_info.value.data
-                    
-                    # Marginfi account structure (simplified):
-                    # - First 8 bytes: discriminator
-                    # - Next 32 bytes: authority (user pubkey)
-                    # - Following bytes: lending positions
-                    
-                    if len(data) < 40:
-                        continue
-                    
-                    # Verify this account belongs to our user
-                    authority_bytes = data[8:40]
-                    account_authority = SolanaPubkey(authority_bytes)
-                    
-                    if account_authority != user_pubkey:
-                        continue
-                    
-                    # This user has a marginfi account
-                    has_positions = True
-                    
-                    # Parse lending positions (structure varies by marginfi version)
-                    # For now, we'll indicate positions exist but parsing full details
-                    # requires more complex deserialization of the account data
-                    
-                    logger.info(f"Found marginfi account {account_index} for user {address}")
-                    
-                except Exception as e:
-                    # Account doesn't exist or error reading it
-                    logger.debug(f"No marginfi account at index {account_index}: {e}")
-                    continue
-            
-            if has_positions:
-                # If we found accounts but couldn't parse details, show a note
-                return {
-                    "success": True,
-                    "address": address,
-                    "has_positions": True,
-                    "supplies": supplies,
-                    "borrows": borrows,
-                    "total_supply_usd": total_supply_usd,
-                    "total_borrow_usd": total_borrow_usd,
-                    "net_value_usd": total_supply_usd - total_borrow_usd,
-                    "note": "Active marginfi positions detected! For detailed balance information, visit https://app.0.xyz/"
-                }
-            else:
-                return {
-                    "success": True,
-                    "address": address,
-                    "has_positions": False,
-                    "supplies": [],
-                    "borrows": [],
-                    "total_supply_usd": 0,
-                    "total_borrow_usd": 0,
-                    "net_value_usd": 0
-                }
-                
-        except Exception as e:
-            logger.error(f"Error querying marginfi accounts: {e}")
-            return {
-                "success": False,
-                "address": address,
-                "has_positions": False,
-                "supplies": [],
-                "borrows": [],
-                "total_supply_usd": 0,
-                "total_borrow_usd": 0,
-                "net_value_usd": 0,
-                "error": f"Unable to query DeFi positions. Visit https://app.0.xyz/ to view your positions."
-            }
-    
-    except Exception as e:
-        logger.error(f"Error fetching marginfi positions: {e}")
-        return {"error": f"Failed to fetch DeFi positions: {str(e)}"}
-
-
 async def get_xpub_balance(xpub: str) -> dict:
     """Fetch Bitcoin HD wallet balance using xpub via Blockchain.info API."""
     try:
@@ -630,8 +552,227 @@ async def get_xpub_balance(xpub: str) -> dict:
         return {"error": f"Failed to fetch xpub balance: {str(e)}"}
 
 
-async def get_portfolio_value(eth_addresses: list, btc_addresses: list, xpub_keys: list = None, sol_addresses: list = None) -> dict:
-    """Calculate total portfolio value for multiple addresses and xpub keys."""
+async def get_erc20_balance(address: str, token_address: str, chain: str) -> dict:
+    """Fetch ERC20 token balance for an address on a specific chain."""
+    try:
+        if chain not in web3_instances:
+            return {"error": f"Unsupported chain: {chain}", "balance": 0}
+        
+        w3 = web3_instances[chain]
+        checksum_address = Web3.to_checksum_address(address)
+        checksum_token = Web3.to_checksum_address(token_address)
+        
+        # Create contract instance
+        contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+        
+        # Get token info
+        try:
+            balance = contract.functions.balanceOf(checksum_address).call()
+            decimals = contract.functions.decimals().call()
+            symbol = contract.functions.symbol().call()
+        except Exception as e:
+            logger.error(f"Error calling contract methods: {e}")
+            return {"error": f"Failed to fetch token data: {str(e)}", "balance": 0}
+        
+        # Convert balance from wei-like units
+        balance_formatted = balance / (10 ** decimals)
+        
+        return {
+            "success": True,
+            "address": address,
+            "token_address": token_address,
+            "chain": chain,
+            "balance": balance_formatted,
+            "decimals": decimals,
+            "symbol": symbol
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching ERC20 balance on {chain}: {e}")
+        return {"error": str(e), "balance": 0}
+
+
+async def get_token_price(coingecko_id: str) -> float:
+    """Fetch token price from CoinGecko."""
+    try:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return float(data.get(coingecko_id, {}).get('usd', 0))
+        return 0.0
+    except Exception as e:
+        logger.error(f"Error fetching price for {coingecko_id}: {e}")
+        return 0.0
+
+
+async def get_all_token_balances(addresses: list, custom_tokens: list = None) -> dict:
+    """Fetch all token balances for user's addresses across all chains."""
+    all_balances = []
+    total_value_usd = 0
+    
+    # Combine default tokens with custom tokens
+    tokens_to_check = {}
+    for chain, tokens in DEFAULT_TOKENS.items():
+        tokens_to_check[chain] = tokens.copy()
+    
+    # Add custom tokens if provided
+    if custom_tokens:
+        for token in custom_tokens:
+            chain = token.get('chain', 'ethereum')
+            if chain not in tokens_to_check:
+                tokens_to_check[chain] = []
+            tokens_to_check[chain].append(token)
+    
+    # Fetch balances for all addresses and tokens
+    tasks = []
+    token_info_map = {}  # Map to store token info for price fetching
+    
+    for address in addresses:
+        for chain, tokens in tokens_to_check.items():
+            for token in tokens:
+                task = get_erc20_balance(address, token['address'], chain)
+                tasks.append(task)
+                # Store token info for later price lookup
+                key = f"{chain}_{token['address']}"
+                token_info_map[key] = token
+    
+    if not tasks:
+        return {"balances": [], "total_value_usd": 0, "token_count": 0}
+    
+    results = await asyncio.gather(*tasks)
+    
+    # Filter non-zero balances and fetch prices
+    price_tasks = {}
+    non_zero_results = []
+    
+    for result in results:
+        if result.get('success') and result.get('balance', 0) > 0.0001:  # Filter dust
+            non_zero_results.append(result)
+            key = f"{result['chain']}_{result['token_address']}"
+            if key in token_info_map:
+                coingecko_id = token_info_map[key].get('coingecko_id')
+                if coingecko_id and coingecko_id not in price_tasks:
+                    price_tasks[coingecko_id] = get_token_price(coingecko_id)
+    
+    # Fetch all prices in parallel
+    if price_tasks:
+        price_results = await asyncio.gather(*price_tasks.values())
+        prices = dict(zip(price_tasks.keys(), price_results))
+    else:
+        prices = {}
+    
+    # Calculate USD values
+    for result in non_zero_results:
+        key = f"{result['chain']}_{result['token_address']}"
+        if key in token_info_map:
+            coingecko_id = token_info_map[key].get('coingecko_id')
+            price = prices.get(coingecko_id, 0)
+            usd_value = result['balance'] * price
+            result['price_usd'] = price
+            result['value_usd'] = usd_value
+            result['chain_name'] = ALL_CHAINS.get(result['chain'], {}).get('name', result['chain'])
+            total_value_usd += usd_value
+            all_balances.append(result)
+    
+    # Sort by USD value
+    all_balances.sort(key=lambda x: x.get('value_usd', 0), reverse=True)
+    
+    return {
+        "balances": all_balances,
+        "total_value_usd": total_value_usd,
+        "token_count": len(all_balances)
+    }
+
+
+async def get_aave_position(address: str, chain: str) -> dict:
+    """Fetch Aave V3 lending position for an address on a specific chain."""
+    try:
+        if chain not in DEFI_PROTOCOLS or 'aave_v3_pool' not in DEFI_PROTOCOLS[chain]:
+            return {"error": f"Aave V3 not supported on {chain}"}
+        
+        w3 = web3_instances[chain]
+        checksum_address = Web3.to_checksum_address(address)
+        pool_address = DEFI_PROTOCOLS[chain]['aave_v3_pool']
+        
+        # Create contract instance
+        contract = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=AAVE_V3_POOL_ABI)
+        
+        # Get user account data
+        account_data = contract.functions.getUserAccountData(checksum_address).call()
+        
+        # Values are in USD with 8 decimals
+        total_collateral = account_data[0] / 1e8
+        total_debt = account_data[1] / 1e8
+        available_borrow = account_data[2] / 1e8
+        health_factor = account_data[5] / 1e18
+        
+        net_value = total_collateral - total_debt
+        
+        if total_collateral == 0 and total_debt == 0:
+            return {"success": True, "has_position": False}
+        
+        return {
+            "success": True,
+            "has_position": True,
+            "chain": chain,
+            "chain_name": ALL_CHAINS.get(chain, {}).get('name', chain),
+            "protocol": "Aave V3",
+            "total_collateral_usd": total_collateral,
+            "total_debt_usd": total_debt,
+            "available_borrow_usd": available_borrow,
+            "net_value_usd": net_value,
+            "health_factor": health_factor
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching Aave position on {chain}: {e}")
+        return {"error": str(e), "has_position": False}
+
+
+async def get_all_defi_positions(addresses: list) -> dict:
+    """Fetch all DeFi positions for user's addresses."""
+    all_positions = []
+    total_collateral = 0
+    total_debt = 0
+    total_net_value = 0
+    
+    # Check Aave on all supported chains
+    tasks = []
+    for address in addresses:
+        for chain in DEFI_PROTOCOLS.keys():
+            tasks.append(get_aave_position(address, chain))
+    
+    if not tasks:
+        return {
+            "positions": [],
+            "total_collateral_usd": 0,
+            "total_debt_usd": 0,
+            "total_net_value_usd": 0,
+            "position_count": 0
+        }
+    
+    results = await asyncio.gather(*tasks)
+    
+    # Filter positions with actual balances
+    for result in results:
+        if result.get('has_position'):
+            all_positions.append(result)
+            total_collateral += result.get('total_collateral_usd', 0)
+            total_debt += result.get('total_debt_usd', 0)
+            total_net_value += result.get('net_value_usd', 0)
+    
+    return {
+        "positions": all_positions,
+        "total_collateral_usd": total_collateral,
+        "total_debt_usd": total_debt,
+        "total_net_value_usd": total_net_value,
+        "position_count": len(all_positions)
+    }
+
+
+async def get_portfolio_value(eth_addresses: list, btc_addresses: list, xpub_keys: list = None, custom_tokens: list = None, track_defi: bool = True) -> dict:
+    """Calculate total portfolio value for multiple addresses and xpub keys, including tokens and DeFi."""
     # Fetch prices
     prices = await get_crypto_prices()
     
@@ -648,42 +789,51 @@ async def get_portfolio_value(eth_addresses: list, btc_addresses: list, xpub_key
     xpub_tasks = [get_xpub_balance(xpub) for xpub in xpub_keys]
     xpub_results = await asyncio.gather(*xpub_tasks) if xpub_keys else []
     
-    # Fetch all SOL balances
-    sol_addresses = sol_addresses or []
-    sol_tasks = [get_solana_balance(addr) for addr in sol_addresses]
-    sol_results = await asyncio.gather(*sol_tasks) if sol_addresses else []
+    # Fetch token balances
+    token_data = await get_all_token_balances(eth_addresses, custom_tokens) if eth_addresses else {
+        "balances": [], "total_value_usd": 0, "token_count": 0
+    }
+    
+    # Fetch DeFi positions
+    defi_data = await get_all_defi_positions(eth_addresses) if (eth_addresses and track_defi) else {
+        "positions": [], "total_collateral_usd": 0, "total_debt_usd": 0, 
+        "total_net_value_usd": 0, "position_count": 0
+    }
     
     # Calculate totals
     total_eth = sum(r.get('total_eth', 0) for r in eth_results if 'error' not in r)
     total_btc = sum(r.get('balance', 0) for r in btc_results if 'error' not in r)
     total_btc_xpub = sum(r.get('balance', 0) for r in xpub_results if 'error' not in r)
-    total_sol = sum(r.get('balance', 0) for r in sol_results if 'error' not in r)
     
     # Combine BTC from addresses and xpub
     total_btc_combined = total_btc + total_btc_xpub
     
     total_eth_usd = total_eth * prices['eth']
     total_btc_usd = total_btc_combined * prices['btc']
-    total_sol_usd = total_sol * prices['sol']
-    total_portfolio_usd = total_eth_usd + total_btc_usd + total_sol_usd
+    
+    # Calculate total portfolio including tokens and DeFi
+    total_portfolio_usd = (
+        total_eth_usd + 
+        total_btc_usd + 
+        token_data['total_value_usd'] + 
+        defi_data['total_net_value_usd']
+    )
     
     return {
         'total_eth': total_eth,
         'total_btc': total_btc,
         'total_btc_xpub': total_btc_xpub,
         'total_btc_combined': total_btc_combined,
-        'total_sol': total_sol,
         'eth_price': prices['eth'],
         'btc_price': prices['btc'],
-        'sol_price': prices['sol'],
         'total_eth_usd': total_eth_usd,
         'total_btc_usd': total_btc_usd,
-        'total_sol_usd': total_sol_usd,
         'total_portfolio_usd': total_portfolio_usd,
         'eth_results': eth_results,
         'btc_results': btc_results,
         'xpub_results': xpub_results,
-        'sol_results': sol_results
+        'token_data': token_data,
+        'defi_data': defi_data
     }
 
 
@@ -692,25 +842,26 @@ async def get_portfolio_value(eth_addresses: list, btc_addresses: list, xpub_key
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     welcome_message = (
-        "👋 Welcome to the Multi-Chain Crypto Portfolio Tracker!\n\n"
-        "I can help you track your crypto portfolio across multiple chains.\n\n"
+        "👋 Welcome to Akitafolio!\n\n"
+        "Your multi-chain crypto portfolio tracker across multiple chains.\n\n"
         "📊 **Balance Commands:**\n"
         "/eth <address> - Check ETH balance across all chains\n"
         "/btc <address> - Check Bitcoin balance\n"
-        "/sol <address> - Check Solana balance\n"
-        "/defi <address> - Check DeFi positions on 0.xyz\n"
         "/xpub <xpub_key> - Check HD wallet balance (xpub/ypub/zpub)\n\n"
         "💼 **Portfolio Management:**\n"
         "/add_eth <addr1> <addr2> ... - Save ETH address(es)\n"
         "/add_btc <addr1> <addr2> ... - Save BTC address(es)\n"
-        "/add_sol <addr1> <addr2> ... - Save SOL address(es)\n"
         "/add_xpub <key1> <key2> ... - Save HD wallet(s)\n"
-        "/portfolio - View total portfolio value (with 24h change!)\n"
+        "/portfolio - View total portfolio value (ETH + BTC + Tokens + DeFi!)\n"
         "/addresses - List your saved addresses\n"
         "/remove_eth <address> - Remove ETH address\n"
         "/remove_btc <address> - Remove BTC address\n"
-        "/remove_sol <address> - Remove SOL address\n"
         "/remove_xpub <xpub_key> - Remove HD wallet\n\n"
+        "🪙 **Token & DeFi Tracking:**\n"
+        "/tokens - View all ERC20 token balances\n"
+        "/defi - View DeFi positions (Aave, etc.)\n"
+        "/add_token - Add custom ERC20 token\n"
+        "/toggle_defi - Enable/disable DeFi tracking\n\n"
         "ℹ️ **Other Commands:**\n"
         "/chains - List all supported chains\n"
         "/help - Show detailed help\n\n"
@@ -726,30 +877,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**1️⃣ Quick Balance Check**\n"
         "   /eth <address> - Check ETH across all chains\n"
         "   /btc <address> - Check Bitcoin balance\n"
-        "   /sol <address> - Check Solana balance\n"
-        "   /defi <address> - Check DeFi positions on 0.xyz\n"
         "   /xpub <xpub_key> - Check HD wallet balance\n\n"
         "**2️⃣ Portfolio Tracking**\n"
         "   a) Save your addresses (single or multiple):\n"
         "      /add_eth 0xAddr1 0xAddr2 0xAddr3\n"
         "      /add_btc btcAddr1 btcAddr2\n"
-        "      /add_sol solAddr1 solAddr2\n"
         "      /add_xpub xpub6... ypub6...\n\n"
         "   b) View total portfolio:\n"
         "      /portfolio\n"
-        "      Shows total ETH + BTC + SOL value in USD!\n"
+        "      Shows total ETH + BTC + Tokens + DeFi in USD!\n"
         "      Includes 24h price change tracking! 📈📉\n\n"
         "   c) Manage addresses:\n"
         "      /addresses - List saved addresses\n"
         "      /remove_eth <address> - Remove address\n\n"
-        "**3️⃣ Supported Networks**\n"
-        "   /chains - See all 8 EVM chains + Bitcoin + Solana\n\n"
+        "**3️⃣ ERC20 Tokens**\n"
+        "   /tokens - View all token balances\n"
+        "   /add_token <chain> <address> <coingecko_id>\n"
+        "   Automatically tracks popular tokens (USDT, USDC, etc.)\n\n"
+        "**4️⃣ DeFi Positions**\n"
+        "   /defi - View lending/borrowing positions\n"
+        "   /toggle_defi - Enable/disable DeFi tracking\n"
+        "   Supports: Aave V3 on multiple chains\n\n"
+        "**5️⃣ Supported Networks**\n"
+        "   /chains - See all 8 EVM chains + Bitcoin\n\n"
         "💰 **Portfolio Features:**\n"
         "• Track multiple addresses\n"
         "• Aggregated ETH from all L1/L2 chains\n"
+        "• ERC20 tokens (USDT, USDC, DAI, WETH, etc.)\n"
+        "• DeFi lending positions (Aave V3)\n"
         "• 24-hour portfolio change tracking\n"
-        "• Combined ETH + BTC + SOL USD value\n"
-        "• DeFi positions on 0.xyz (Solana)\n"
+        "• Combined total value in USD\n"
         "• Real-time prices from CoinGecko\n"
     )
     await update.message.reply_text(help_message, parse_mode='Markdown')
@@ -876,117 +1033,6 @@ async def btc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response_message += f"📈 BTC Price: ${prices['btc']:,.2f}"
         
         await processing_msg.edit_text(response_message, parse_mode='Markdown')
-
-
-async def sol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /sol command to check Solana balance."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Please provide a Solana address.\n"
-            "Usage: /sol <solana_address>\n"
-            "Example: /sol 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\n\n"
-            "💡 Tip: Use /add_sol to save addresses for portfolio tracking!"
-        )
-        return
-    
-    address = context.args[0]
-    
-    # Send "processing" message
-    processing_msg = await update.message.reply_text("🔄 Fetching Solana balance...")
-    
-    # Get balance and price
-    result = await get_solana_balance(address)
-    prices = await get_crypto_prices()
-    
-    if "error" in result:
-        await processing_msg.edit_text(f"❌ Error: {result['error']}")
-    else:
-        sol_balance = result['balance']
-        usd_value = sol_balance * prices['sol'] if prices['sol'] > 0 else 0
-        
-        response_message = (
-            f"◎ **Solana Balance**\n\n"
-            f"Address: `{result['address']}`\n"
-            f"Balance: **{sol_balance:.6f} SOL**\n"
-        )
-        
-        if prices['sol'] > 0:
-            response_message += f"💵 USD Value: **${usd_value:,.2f}**\n"
-            response_message += f"📈 SOL Price: ${prices['sol']:,.2f}"
-        
-        await processing_msg.edit_text(response_message, parse_mode='Markdown')
-
-
-async def defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /defi command to check DeFi positions on 0.xyz (marginfi)."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Please provide a Solana address.\n"
-            "Usage: /defi <solana_address>\n"
-            "Example: /defi 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\n\n"
-            "💡 This shows your lending/borrowing positions on 0.xyz"
-        )
-        return
-    
-    address = context.args[0]
-    
-    # Send "processing" message
-    processing_msg = await update.message.reply_text("🔄 Fetching DeFi positions from 0.xyz...")
-    
-    # Get DeFi positions
-    result = await get_marginfi_positions(address)
-    
-    if "error" in result:
-        await processing_msg.edit_text(f"❌ Error: {result['error']}")
-    else:
-        if not result['has_positions']:
-            response_message = (
-                f"🏦 **DeFi Positions (0.xyz)**\n\n"
-                f"Address: `{address[:10]}...{address[-8:]}`\n\n"
-            )
-            
-            if result.get('note'):
-                response_message += f"{result['note']}\n\n"
-            else:
-                response_message += f"📭 No active positions found.\n\n"
-            
-            response_message += f"💡 Visit [app.0.xyz](https://app.0.xyz/) to start lending or borrowing!"
-        else:
-            response_message = (
-                f"🏦 **DeFi Positions (0.xyz)**\n\n"
-                f"Address: `{address[:10]}...{address[-8:]}`\n\n"
-            )
-            
-            # Display supplies
-            if result['supplies']:
-                response_message += "📈 **Supplied:**\n"
-                for supply in result['supplies']:
-                    response_message += f"  • {supply['amount']:.4f} {supply['token']}"
-                    if supply['usd'] > 0:
-                        response_message += f" (${supply['usd']:,.2f})"
-                    response_message += "\n"
-                response_message += f"\n💰 Total Supply: **${result['total_supply_usd']:,.2f}**\n\n"
-            
-            # Display borrows
-            if result['borrows']:
-                response_message += "📉 **Borrowed:**\n"
-                for borrow in result['borrows']:
-                    response_message += f"  • {borrow['amount']:.4f} {borrow['token']}"
-                    if borrow['usd'] > 0:
-                        response_message += f" (${borrow['usd']:,.2f})"
-                    response_message += "\n"
-                response_message += f"\n💸 Total Borrow: **${result['total_borrow_usd']:,.2f}**\n\n"
-            
-            # Net value
-            if result['total_supply_usd'] > 0 or result['total_borrow_usd'] > 0:
-                response_message += f"📊 **Net Value:** ${result['net_value_usd']:,.2f}\n\n"
-            
-            if result.get('note'):
-                response_message += f"ℹ️ {result['note']}\n\n"
-            
-            response_message += f"🔗 View full details: [app.0.xyz](https://app.0.xyz/)"
-        
-        await processing_msg.edit_text(response_message, parse_mode='Markdown', disable_web_page_preview=True)
 
 
 async def add_eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1285,25 +1331,31 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_saved_addresses(user_id)
     
-    if not addresses['eth'] and not addresses['btc'] and not addresses['xpub'] and not addresses['sol']:
+    if not addresses['eth'] and not addresses['btc'] and not addresses['xpub']:
         await update.message.reply_text(
             "📭 You don't have any saved addresses yet.\n\n"
             "Add addresses to start tracking your portfolio:\n"
             "/add_eth <address> - Add Ethereum address\n"
             "/add_btc <address> - Add Bitcoin address\n"
-            "/add_xpub <xpub_key> - Add HD wallet\n"
-            "/add_sol <address> - Add Solana address"
+            "/add_xpub <xpub_key> - Add HD wallet"
         )
         return
     
     # Send processing message
     processing_msg = await update.message.reply_text(
         "🔄 Calculating your portfolio value...\n"
+        "📊 Fetching tokens and DeFi positions...\n"
         "This may take a moment ⏳"
     )
     
-    # Get portfolio value
-    portfolio = await get_portfolio_value(addresses['eth'], addresses['btc'], addresses['xpub'], addresses['sol'])
+    # Get portfolio value (including tokens and DeFi)
+    portfolio = await get_portfolio_value(
+        addresses['eth'], 
+        addresses['btc'], 
+        addresses['xpub'],
+        addresses.get('tokens', []),
+        addresses.get('track_defi', True)
+    )
     
     # Save portfolio snapshot for historical tracking
     save_portfolio_snapshot(
@@ -1311,10 +1363,8 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         portfolio['total_portfolio_usd'],
         portfolio['total_eth'],
         portfolio['total_btc_combined'],
-        portfolio['total_sol'],
         portfolio['eth_price'],
-        portfolio['btc_price'],
-        portfolio['sol_price']
+        portfolio['btc_price']
     )
     
     # Calculate 24h change
@@ -1378,28 +1428,56 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += f"HD Wallets: {len(addresses['xpub'])}\n"
         response += "\n"
     
-    # SOL Summary
-    if portfolio['total_sol'] > 0:
-        response += f"◎ **Solana**\n"
-        response += f"Total: {portfolio['total_sol']:.6f} SOL\n"
-        response += f"Value: ${portfolio['total_sol_usd']:,.2f}\n"
-        response += f"Price: ${portfolio['sol_price']:,.2f}\n"
-        response += f"Addresses: {len(addresses['sol'])}\n\n"
+    # ERC20 Tokens Summary
+    token_data = portfolio.get('token_data', {})
+    if token_data.get('total_value_usd', 0) > 0:
+        response += f"🪙 **ERC20 Tokens**\n"
+        response += f"Total Value: ${token_data['total_value_usd']:,.2f}\n"
+        response += f"Tokens: {token_data['token_count']}\n"
+        
+        # Show top 5 tokens
+        top_tokens = token_data.get('balances', [])[:5]
+        if top_tokens:
+            response += "\nTop Holdings:\n"
+            for token in top_tokens:
+                response += f"  • {token['balance']:.4f} {token['symbol']} (${token['value_usd']:,.2f})\n"
+        
+        if token_data['token_count'] > 5:
+            response += f"  ... and {token_data['token_count'] - 5} more\n"
+        
+        response += f"\n💡 Use /tokens to see all tokens\n\n"
+    
+    # DeFi Positions Summary
+    defi_data = portfolio.get('defi_data', {})
+    if defi_data.get('position_count', 0) > 0:
+        response += f"🏦 **DeFi Positions**\n"
+        response += f"Net Value: ${defi_data['total_net_value_usd']:,.2f}\n"
+        response += f"Collateral: ${defi_data['total_collateral_usd']:,.2f}\n"
+        response += f"Debt: ${defi_data['total_debt_usd']:,.2f}\n"
+        response += f"Positions: {defi_data['position_count']}\n"
+        response += f"\n💡 Use /defi to see details\n\n"
     
     response += "─" * 30 + "\n\n"
     
     # Allocation
     if portfolio['total_portfolio_usd'] > 0:
-        eth_pct = (portfolio['total_eth_usd'] / portfolio['total_portfolio_usd']) * 100
-        btc_pct = (portfolio['total_btc_usd'] / portfolio['total_portfolio_usd']) * 100
-        sol_pct = (portfolio['total_sol_usd'] / portfolio['total_portfolio_usd']) * 100
-        response += f"📊 **Allocation**\n"
+        components = []
         if portfolio['total_eth'] > 0:
-            response += f"ETH: {eth_pct:.1f}%\n"
-        if portfolio['total_btc'] > 0:
-            response += f"BTC: {btc_pct:.1f}%\n"
-        if portfolio['total_sol'] > 0:
-            response += f"SOL: {sol_pct:.1f}%\n"
+            eth_pct = (portfolio['total_eth_usd'] / portfolio['total_portfolio_usd']) * 100
+            components.append(f"ETH: {eth_pct:.1f}%")
+        if portfolio['total_btc_combined'] > 0:
+            btc_pct = (portfolio['total_btc_usd'] / portfolio['total_portfolio_usd']) * 100
+            components.append(f"BTC: {btc_pct:.1f}%")
+        if token_data.get('total_value_usd', 0) > 0:
+            token_pct = (token_data['total_value_usd'] / portfolio['total_portfolio_usd']) * 100
+            components.append(f"Tokens: {token_pct:.1f}%")
+        if defi_data.get('total_net_value_usd', 0) > 0:
+            defi_pct = (defi_data['total_net_value_usd'] / portfolio['total_portfolio_usd']) * 100
+            components.append(f"DeFi: {defi_pct:.1f}%")
+        
+        if components:
+            response += f"📊 **Allocation**\n"
+            response += "\n".join(components)
     
     await processing_msg.edit_text(response, parse_mode='Markdown')
 
@@ -1409,14 +1487,13 @@ async def addresses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_saved_addresses(user_id)
     
-    if not addresses['eth'] and not addresses['btc'] and not addresses['xpub'] and not addresses['sol']:
+    if not addresses['eth'] and not addresses['btc'] and not addresses['xpub']:
         await update.message.reply_text(
             "📭 You don't have any saved addresses.\n\n"
             "Add addresses using:\n"
             "/add_eth <address>\n"
             "/add_btc <address>\n"
-            "/add_xpub <xpub_key>\n"
-            "/add_sol <address>"
+            "/add_xpub <xpub_key>"
         )
         return
     
@@ -1432,12 +1509,6 @@ async def addresses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response += f"₿ **Bitcoin ({len(addresses['btc'])} address{'es' if len(addresses['btc']) > 1 else ''}):**\n"
         for i, addr in enumerate(addresses['btc'], 1):
             response += f"{i}. `{addr}`\n"
-        response += "\n"
-    
-    if addresses['sol']:
-        response += f"◎ **Solana ({len(addresses['sol'])} address{'es' if len(addresses['sol']) > 1 else ''}):**\n"
-        for i, addr in enumerate(addresses['sol'], 1):
-            response += f"{i}. `{addr[:10]}...{addr[-8:]}`\n"
         response += "\n"
     
     if addresses['xpub']:
@@ -1535,100 +1606,237 @@ async def remove_xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ xpub not found in your portfolio.")
 
 
-async def add_sol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add one or multiple Solana addresses to user's portfolio."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Please provide Solana address(es) to save.\n\n"
-            "Usage:\n"
-            "• Single: /add_sol <address>\n"
-            "• Multiple: /add_sol <addr1> <addr2> <addr3>\n\n"
-            "Example:\n"
-            "/add_sol 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\n"
-            "/add_sol SolAddr1 SolAddr2 SolAddr3"
-        )
-        return
-    
+async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display all ERC20 token balances."""
     user_id = update.effective_user.id
     addresses = load_saved_addresses(user_id)
     
-    added_count = 0
-    skipped_count = 0
-    invalid_count = 0
+    if not addresses['eth']:
+        await update.message.reply_text(
+            "📭 You don't have any saved ETH addresses yet.\n\n"
+            "Add addresses to track tokens:\n"
+            "/add_eth <address> - Add Ethereum address"
+        )
+        return
     
-    for address_arg in context.args:
-        # Split by comma if present, then strip whitespace
-        potential_addresses = [addr.strip() for addr in address_arg.split(',') if addr.strip()]
+    # Send processing message
+    processing_msg = await update.message.reply_text(
+        "🔄 Fetching token balances...\n"
+        "This may take a moment ⏳"
+    )
+    
+    # Get token balances
+    token_data = await get_all_token_balances(addresses['eth'], addresses.get('tokens', []))
+    
+    if token_data['token_count'] == 0:
+        await processing_msg.edit_text(
+            "💭 No token balances found.\n\n"
+            "Make sure you have tokens in your tracked addresses!"
+        )
+        return
+    
+    # Build response
+    response = "🪙 **YOUR TOKEN HOLDINGS**\n\n"
+    response += "═" * 30 + "\n\n"
+    response += f"💰 **Total Value: ${token_data['total_value_usd']:,.2f}**\n"
+    response += f"📊 Tokens: {token_data['token_count']}\n\n"
+    response += "─" * 30 + "\n\n"
+    
+    # Group tokens by chain
+    tokens_by_chain = {}
+    for token in token_data['balances']:
+        chain_name = token.get('chain_name', token['chain'])
+        if chain_name not in tokens_by_chain:
+            tokens_by_chain[chain_name] = []
+        tokens_by_chain[chain_name].append(token)
+    
+    # Display tokens by chain
+    for chain_name, tokens in tokens_by_chain.items():
+        chain_emoji = ALL_CHAINS.get(tokens[0]['chain'], {}).get('emoji', '🔗')
+        response += f"{chain_emoji} **{chain_name}**\n"
         
-        for address in potential_addresses:
-            if not is_valid_solana_address(address):
-                invalid_count += 1
-                continue
-            
-            if address in addresses['sol']:
-                skipped_count += 1
-                continue
-            
-            addresses['sol'].append(address)
-            added_count += 1
+        for token in tokens:
+            response += f"  • {token['balance']:.4f} {token['symbol']}\n"
+            response += f"    ${token['value_usd']:,.2f} (@ ${token['price_usd']:,.4f})\n"
+        
+        response += "\n"
     
-    if added_count > 0:
-        if save_addresses(user_id, addresses):
-            response_message = f"✅ Added {added_count} SOL address(es)!\n\n"
-            # Show first 5 added addresses
-            for i, addr in enumerate(addresses['sol'][-added_count:]):
-                if i < 5:
-                    response_message += f"{i+1}. `{addr[:10]}...{addr[-8:]}`\n"
-            if added_count > 5:
-                response_message += f"... and {added_count - 5} more.\n"
-            
-            response_message += f"\n📊 Total tracked: {len(addresses['sol'])} address(es)\n"
-            response_message += f"\n💡 Use /portfolio to see your total value!"
-            
-            if skipped_count > 0:
-                response_message += f"\nℹ️ {skipped_count} address(es) were already in your portfolio."
-            if invalid_count > 0:
-                response_message += f"\n❌ {invalid_count} address(es) had an invalid format."
-            
-            await update.message.reply_text(response_message, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ Failed to save addresses. Please try again.")
-    elif skipped_count > 0 or invalid_count > 0:
-        response_message = ""
-        if skipped_count > 0:
-            response_message += f"ℹ️ {skipped_count} address(es) were already in your portfolio.\n"
-        if invalid_count > 0:
-            response_message += f"❌ {invalid_count} address(es) had an invalid format."
-        await update.message.reply_text(response_message)
-    else:
-        await update.message.reply_text("⚠️ No valid new addresses provided.")
+    await processing_msg.edit_text(response, parse_mode='Markdown')
 
 
-async def remove_sol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove a Solana address from portfolio."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Please provide a Solana address to remove.\n"
-            "Usage: /remove_sol <address>\n\n"
-            "💡 Use /addresses to see your saved addresses"
-        )
-        return
-    
-    address = context.args[0]
+async def defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display all DeFi positions."""
     user_id = update.effective_user.id
     addresses = load_saved_addresses(user_id)
     
-    if address in addresses['sol']:
-        addresses['sol'].remove(address)
+    if not addresses['eth']:
+        await update.message.reply_text(
+            "📭 You don't have any saved ETH addresses yet.\n\n"
+            "Add addresses to track DeFi positions:\n"
+            "/add_eth <address> - Add Ethereum address"
+        )
+        return
+    
+    # Send processing message
+    processing_msg = await update.message.reply_text(
+        "🔄 Fetching DeFi positions...\n"
+        "This may take a moment ⏳"
+    )
+    
+    # Get DeFi positions
+    defi_data = await get_all_defi_positions(addresses['eth'])
+    
+    if defi_data['position_count'] == 0:
+        await processing_msg.edit_text(
+            "💭 No DeFi positions found.\n\n"
+            "Supported protocols:\n"
+            "• Aave V3 (Ethereum, Arbitrum, Optimism, Base, Polygon)"
+        )
+        return
+    
+    # Build response
+    response = "🏦 **YOUR DeFi POSITIONS**\n\n"
+    response += "═" * 30 + "\n\n"
+    response += f"💰 **Net Value: ${defi_data['total_net_value_usd']:,.2f}**\n"
+    response += f"📊 Positions: {defi_data['position_count']}\n\n"
+    response += f"🔒 Total Collateral: ${defi_data['total_collateral_usd']:,.2f}\n"
+    response += f"💳 Total Debt: ${defi_data['total_debt_usd']:,.2f}\n\n"
+    response += "─" * 30 + "\n\n"
+    
+    # Display individual positions
+    for position in defi_data['positions']:
+        chain_emoji = ALL_CHAINS.get(position['chain'], {}).get('emoji', '🔗')
+        response += f"{chain_emoji} **{position['protocol']} - {position['chain_name']}**\n"
+        response += f"  Collateral: ${position['total_collateral_usd']:,.2f}\n"
+        response += f"  Debt: ${position['total_debt_usd']:,.2f}\n"
+        response += f"  Net: ${position['net_value_usd']:,.2f}\n"
+        
+        # Health factor warning
+        hf = position.get('health_factor', 0)
+        debt = position.get('total_debt_usd', 0)
+        
+        if debt == 0 or hf > 100000:
+            # No debt means infinite health factor
+            response += f"  ✅ Health Factor: ∞ (No Debt)\n"
+        elif hf > 0:
+            if hf < 1.5:
+                response += f"  ⚠️ Health Factor: {hf:.2f} (RISKY!)\n"
+            elif hf < 2.0:
+                response += f"  ⚡ Health Factor: {hf:.2f} (Low)\n"
+            else:
+                response += f"  ✅ Health Factor: {hf:.2f}\n"
+        
+        response += "\n"
+    
+    await processing_msg.edit_text(response, parse_mode='Markdown')
+
+
+async def add_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a custom ERC20 token to track."""
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "⚠️ Please provide token details.\n\n"
+            "Usage: /add_token <chain> <contract_address> <coingecko_id>\n\n"
+            "Example:\n"
+            "/add_token ethereum 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984 uniswap\n\n"
+            "Supported chains:\n"
+            "ethereum, base, arbitrum, optimism, polygon"
+        )
+        return
+    
+    chain = context.args[0].lower()
+    contract_address = context.args[1]
+    coingecko_id = context.args[2]
+    
+    # Validate chain
+    if chain not in web3_instances:
+        await update.message.reply_text(
+            f"❌ Unsupported chain: {chain}\n\n"
+            "Supported chains:\n" + 
+            ", ".join(web3_instances.keys())
+        )
+        return
+    
+    # Validate address format
+    if not is_valid_ethereum_address(contract_address):
+        await update.message.reply_text("❌ Invalid contract address format.")
+        return
+    
+    user_id = update.effective_user.id
+    addresses = load_saved_addresses(user_id)
+    
+    # Try to get token info
+    processing_msg = await update.message.reply_text("🔄 Validating token...")
+    
+    # Test fetching token info
+    try:
+        w3 = web3_instances[chain]
+        contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=ERC20_ABI)
+        symbol = contract.functions.symbol().call()
+        decimals = contract.functions.decimals().call()
+        
+        # Create token entry
+        token_entry = {
+            'chain': chain,
+            'address': contract_address,
+            'symbol': symbol,
+            'decimals': decimals,
+            'coingecko_id': coingecko_id
+        }
+        
+        # Check if already added
+        if 'tokens' not in addresses:
+            addresses['tokens'] = []
+        
+        for existing in addresses['tokens']:
+            if existing['address'].lower() == contract_address.lower() and existing['chain'] == chain:
+                await processing_msg.edit_text("ℹ️ This token is already being tracked.")
+                return
+        
+        addresses['tokens'].append(token_entry)
+        
         if save_addresses(user_id, addresses):
-            await update.message.reply_text(
-                f"✅ SOL address removed from your portfolio.\n\n"
-                f"Remaining addresses: {len(addresses['sol'])}"
+            await processing_msg.edit_text(
+                f"✅ **Token added successfully!**\n\n"
+                f"Token: {symbol}\n"
+                f"Chain: {chain.capitalize()}\n"
+                f"Address: `{contract_address[:10]}...{contract_address[-8:]}`\n\n"
+                f"💡 Use /portfolio to see it in your holdings!",
+                parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text("❌ Failed to remove address. Please try again.")
+            await processing_msg.edit_text("❌ Failed to save token. Please try again.")
+    
+    except Exception as e:
+        logger.error(f"Error adding token: {e}")
+        await processing_msg.edit_text(
+            f"❌ Failed to validate token.\n\n"
+            f"Error: {str(e)}\n\n"
+            "Please verify:\n"
+            "• Contract address is correct\n"
+            "• Token is ERC20 standard\n"
+            "• Chain is correct"
+        )
+
+
+async def toggle_defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle DeFi position tracking on/off."""
+    user_id = update.effective_user.id
+    addresses = load_saved_addresses(user_id)
+    
+    current_status = addresses.get('track_defi', True)
+    addresses['track_defi'] = not current_status
+    
+    if save_addresses(user_id, addresses):
+        status_text = "enabled ✅" if addresses['track_defi'] else "disabled ❌"
+        await update.message.reply_text(
+            f"DeFi position tracking is now **{status_text}**\n\n"
+            f"Use /portfolio to see updated results.",
+            parse_mode='Markdown'
+        )
     else:
-        await update.message.reply_text("❌ Address not found in your portfolio.")
+        await update.message.reply_text("❌ Failed to update settings. Please try again.")
+
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1653,32 +1861,36 @@ def main():
     application.add_handler(CommandHandler("chains", chains_command))
     application.add_handler(CommandHandler("eth", eth_command))
     application.add_handler(CommandHandler("btc", btc_command))
-    application.add_handler(CommandHandler("sol", sol_command))
-    application.add_handler(CommandHandler("defi", defi_command))
     application.add_handler(CommandHandler("xpub", xpub_command))
     
     # Portfolio management commands
     application.add_handler(CommandHandler("add_eth", add_eth_command))
     application.add_handler(CommandHandler("add_btc", add_btc_command))
-    application.add_handler(CommandHandler("add_sol", add_sol_command))
     application.add_handler(CommandHandler("add_xpub", add_xpub_command))
     application.add_handler(CommandHandler("portfolio", portfolio_command))
     application.add_handler(CommandHandler("addresses", addresses_command))
     application.add_handler(CommandHandler("remove_eth", remove_eth_command))
     application.add_handler(CommandHandler("remove_btc", remove_btc_command))
-    application.add_handler(CommandHandler("remove_sol", remove_sol_command))
     application.add_handler(CommandHandler("remove_xpub", remove_xpub_command))
+    
+    # Token and DeFi commands
+    application.add_handler(CommandHandler("tokens", tokens_command))
+    application.add_handler(CommandHandler("defi", defi_command))
+    application.add_handler(CommandHandler("add_token", add_token_command))
+    application.add_handler(CommandHandler("toggle_defi", toggle_defi_command))
     
     # Register error handler
     application.add_error_handler(error_handler)
     
     # Start the Bot
-    logger.info("Starting bot...")
-    print("🤖 Bot is running...")
-    print(f"📡 Monitoring {len(ALL_CHAINS)} EVM chains + Bitcoin + Solana")
-    print(f"💼 Portfolio tracking enabled (ETH, BTC, SOL, xpub)")
+    logger.info("Starting Akitafolio...")
+    print("🐕 Akitafolio is running...")
+    print(f"📡 Monitoring {len(ALL_CHAINS)} EVM chains + Bitcoin")
+    print(f"💼 Portfolio tracking enabled (ETH, BTC, xpub)")
     print(f"🔑 HD Wallet support via Blockchain.info API")
     print(f"📊 24h portfolio change tracking enabled")
+    print(f"🪙 ERC20 token tracking enabled")
+    print(f"🏦 DeFi position tracking enabled (Aave V3)")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

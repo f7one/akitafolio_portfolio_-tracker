@@ -1,10 +1,10 @@
 #!/bin/bash
-# Deployment script for Telegram Crypto Bot
+# Deployment script for Akitafolio
 # Server: 194.87.83.103
 
 set -e
 
-echo "🚀 Deploying Telegram Crypto Bot..."
+echo "🚀 Deploying Akitafolio..."
 
 # Configuration
 SERVER_IP="194.87.83.103"
@@ -72,7 +72,7 @@ ssh $SERVER_USER@$SERVER_IP << 'ENDSSH'
     echo "Creating systemd service..."
     cat > /etc/systemd/system/tg-balance-bot.service << 'EOF'
 [Unit]
-Description=Telegram Crypto Balance Bot
+Description=Akitafolio - Multi-Chain Crypto Portfolio Tracker
 After=network.target
 
 [Service]
@@ -93,7 +93,7 @@ EOF
     systemctl enable tg-balance-bot
     systemctl start tg-balance-bot
     
-    echo "✅ Bot deployed and started!"
+    echo "✅ Akitafolio deployed and started!"
     echo ""
     echo "Service status:"
     systemctl status tg-balance-bot --no-pager

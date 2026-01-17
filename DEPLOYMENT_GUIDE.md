@@ -1,4 +1,4 @@
-# 🚀 Deployment Guide - Server 194.87.83.103
+# 🚀 Akitafolio Deployment Guide - Server 194.87.83.103
 
 ## 📋 Prerequisites
 
