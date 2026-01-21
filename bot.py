@@ -3,10 +3,13 @@ import logging
 import asyncio
 import json
 import re
+import time
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Optional, Dict, List, Any, Callable
+from collections import defaultdict
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from web3 import Web3
@@ -16,12 +19,130 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with secrets masking
+class SecretsFilter(logging.Filter):
+    """Filter to mask sensitive data in logs."""
+    
+    SENSITIVE_PATTERNS = [
+        (re.compile(r'(bot|token)[=:\s]*["\']?([a-zA-Z0-9_-]{30,})["\']?', re.IGNORECASE), r'\1=***MASKED***'),
+        (re.compile(r'(api[_-]?key|secret|password|infura)[=:\s]*["\']?([a-zA-Z0-9_-]{10,})["\']?', re.IGNORECASE), r'\1=***MASKED***'),
+        (re.compile(r'(0x[a-fA-F0-9]{40})', re.IGNORECASE), lambda m: m.group(1)[:10] + '...' + m.group(1)[-4:]),
+    ]
+    
+    def filter(self, record):
+        if hasattr(record, 'msg') and isinstance(record.msg, str):
+            for pattern, replacement in self.SENSITIVE_PATTERNS:
+                if callable(replacement):
+                    record.msg = pattern.sub(replacement, record.msg)
+                else:
+                    record.msg = pattern.sub(replacement, record.msg)
+        return True
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logger.addFilter(SecretsFilter())
+
+
+# ============================================================================
+# CUSTOM EXCEPTIONS
+# ============================================================================
+
+class BotError(Exception):
+    """Base exception for bot errors."""
+    pass
+
+class RateLimitError(BotError):
+    """Raised when rate limit is exceeded."""
+    pass
+
+class APIError(BotError):
+    """Raised when an external API call fails."""
+    pass
+
+class StorageError(BotError):
+    """Raised when storage operations fail."""
+    pass
+
+class ConfigurationError(BotError):
+    """Raised when configuration is invalid."""
+    pass
+
+
+# ============================================================================
+# RATE LIMITER
+# ============================================================================
+
+class RateLimiter:
+    """Token bucket rate limiter for API calls."""
+    
+    def __init__(self, calls_per_second: float = 5.0, burst_size: int = 10):
+        self.calls_per_second = calls_per_second
+        self.burst_size = burst_size
+        self._tokens = burst_size
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+        
+        # Per-endpoint rate limiting
+        self._endpoint_calls: Dict[str, List[float]] = defaultdict(list)
+        self._endpoint_limits: Dict[str, tuple] = {
+            'coingecko': (10, 60),    # 10 calls per 60 seconds
+            'blockchain': (30, 60),    # 30 calls per 60 seconds
+            'infura': (100, 1),        # 100 calls per second
+        }
+    
+    def _get_endpoint_type(self, url: str) -> Optional[str]:
+        """Identify endpoint type from URL."""
+        if 'coingecko' in url:
+            return 'coingecko'
+        elif 'blockchain.info' in url:
+            return 'blockchain'
+        elif 'infura.io' in url:
+            return 'infura'
+        return None
+    
+    async def acquire(self, url: str = "") -> bool:
+        """Acquire a rate limit token. Returns True if allowed, raises RateLimitError if not."""
+        async with self._lock:
+            now = time.monotonic()
+            
+            # Refill tokens based on time passed
+            time_passed = now - self._last_refill
+            self._tokens = min(self.burst_size, self._tokens + time_passed * self.calls_per_second)
+            self._last_refill = now
+            
+            # Check per-endpoint limits
+            endpoint_type = self._get_endpoint_type(url)
+            if endpoint_type:
+                limit, window = self._endpoint_limits[endpoint_type]
+                cutoff = now - window
+                
+                # Clean old entries
+                self._endpoint_calls[endpoint_type] = [
+                    t for t in self._endpoint_calls[endpoint_type] if t > cutoff
+                ]
+                
+                if len(self._endpoint_calls[endpoint_type]) >= limit:
+                    wait_time = self._endpoint_calls[endpoint_type][0] - cutoff
+                    logger.warning(f"Rate limit for {endpoint_type}: waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time + 0.1)
+                
+                self._endpoint_calls[endpoint_type].append(now)
+            
+            # Check global bucket
+            if self._tokens < 1:
+                wait_time = (1 - self._tokens) / self.calls_per_second
+                logger.warning(f"Global rate limit: waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+                self._tokens = 1
+            
+            self._tokens -= 1
+            return True
+
+# Global rate limiter instance
+rate_limiter = RateLimiter(calls_per_second=10.0, burst_size=20)
 
 
 # ============================================================================
@@ -57,15 +178,42 @@ def retry_async(max_retries: int = 3, backoff_factor: float = 1.5, exceptions: t
 # HTTP CLIENT SESSION MANAGER
 # ============================================================================
 
+# Timeout configuration (consistent across all requests)
+class TimeoutConfig:
+    """Centralized timeout configuration."""
+    DEFAULT = 15
+    FAST = 10
+    SLOW = 30
+    RPC = 20
+    
+    @classmethod
+    def get_timeout(cls, timeout: Optional[int] = None) -> aiohttp.ClientTimeout:
+        """Get aiohttp ClientTimeout with consistent settings."""
+        total = timeout or cls.DEFAULT
+        return aiohttp.ClientTimeout(
+            total=total,
+            connect=min(5, total),
+            sock_read=total
+        )
+
+
 class HTTPClient:
-    """Singleton HTTP client with connection pooling."""
+    """Singleton HTTP client with connection pooling and rate limiting."""
     _session: Optional[aiohttp.ClientSession] = None
-    _timeout = aiohttp.ClientTimeout(total=15)
+    _timeout = TimeoutConfig.get_timeout()
     
     @classmethod
     async def get_session(cls) -> aiohttp.ClientSession:
         if cls._session is None or cls._session.closed:
-            cls._session = aiohttp.ClientSession(timeout=cls._timeout)
+            connector = aiohttp.TCPConnector(
+                limit=50,  # Max connections
+                limit_per_host=10,
+                ttl_dns_cache=300
+            )
+            cls._session = aiohttp.ClientSession(
+                timeout=cls._timeout,
+                connector=connector
+            )
         return cls._session
     
     @classmethod
@@ -74,22 +222,42 @@ class HTTPClient:
             await cls._session.close()
     
     @classmethod
-    @retry_async(max_retries=3, backoff_factor=1.5)
-    async def get(cls, url: str, timeout: int = 10) -> Dict[str, Any]:
-        """Make async GET request with retry logic."""
+    @retry_async(max_retries=3, backoff_factor=1.5, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def get(cls, url: str, timeout: int = TimeoutConfig.DEFAULT) -> Dict[str, Any]:
+        """Make async GET request with retry logic and rate limiting."""
+        await rate_limiter.acquire(url)
         session = await cls.get_session()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
-            response.raise_for_status()
-            return await response.json()
+        try:
+            async with session.get(url, timeout=TimeoutConfig.get_timeout(timeout)) as response:
+                if response.status == 429:  # Too Many Requests
+                    retry_after = int(response.headers.get('Retry-After', 5))
+                    logger.warning(f"Rate limited by server, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    raise aiohttp.ClientError("Rate limited, retry")
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ContentTypeError as e:
+            logger.error(f"Invalid JSON response from {url}: {e}")
+            raise APIError(f"Invalid JSON response: {e}") from e
     
     @classmethod
-    @retry_async(max_retries=3, backoff_factor=1.5)
-    async def get_text(cls, url: str, timeout: int = 10) -> str:
-        """Make async GET request returning text with retry logic."""
+    @retry_async(max_retries=3, backoff_factor=1.5, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def get_text(cls, url: str, timeout: int = TimeoutConfig.DEFAULT) -> str:
+        """Make async GET request returning text with retry logic and rate limiting."""
+        await rate_limiter.acquire(url)
         session = await cls.get_session()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
-            response.raise_for_status()
-            return await response.text()
+        try:
+            async with session.get(url, timeout=TimeoutConfig.get_timeout(timeout)) as response:
+                if response.status == 429:
+                    retry_after = int(response.headers.get('Retry-After', 5))
+                    logger.warning(f"Rate limited by server, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    raise aiohttp.ClientError("Rate limited, retry")
+                response.raise_for_status()
+                return await response.text()
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error for {url}: {e}")
+            raise APIError(f"HTTP request failed: {e}") from e
 
 
 # ============================================================================
@@ -161,6 +329,102 @@ class Validator:
         if chain not in valid_chains:
             raise ValidationError(f"Unsupported chain: {chain}. Valid chains: {', '.join(valid_chains.keys())}")
         return chain
+    
+    @staticmethod
+    def sanitize_file_path(file_path: Path, base_dir: Path) -> Path:
+        """Sanitize file path to prevent path traversal attacks."""
+        # Resolve to absolute path
+        resolved = file_path.resolve()
+        base_resolved = base_dir.resolve()
+        
+        # Ensure the resolved path is within the base directory
+        try:
+            resolved.relative_to(base_resolved)
+        except ValueError:
+            raise ValidationError(f"Path traversal detected: {file_path}")
+        
+        return resolved
+    
+    @staticmethod
+    def validate_user_id(user_id: Any) -> int:
+        """Validate Telegram user ID."""
+        try:
+            uid = int(user_id)
+            if uid <= 0:
+                raise ValidationError("User ID must be positive")
+            return uid
+        except (ValueError, TypeError):
+            raise ValidationError(f"Invalid user ID: {user_id}")
+    
+    @staticmethod
+    def sanitize_string(value: str, max_length: int = 500) -> str:
+        """Sanitize string input to prevent injection attacks."""
+        if not isinstance(value, str):
+            raise ValidationError("Input must be a string")
+        
+        # Limit length
+        value = value[:max_length]
+        
+        # Remove null bytes and other control characters
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+        
+        return value.strip()
+
+
+# ============================================================================
+# SECURE STORAGE HANDLER
+# ============================================================================
+
+class SecureStorage:
+    """Secure file storage with path validation and atomic writes."""
+    
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir.resolve()
+        self._lock = asyncio.Lock()
+    
+    def _get_safe_path(self, filename: str) -> Path:
+        """Get safe file path within base directory."""
+        # Only allow alphanumeric filenames with limited extensions
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
+        if not safe_name or safe_name.startswith('.'):
+            raise ValidationError(f"Invalid filename: {filename}")
+        
+        return Validator.sanitize_file_path(self.base_dir / safe_name, self.base_dir)
+    
+    def read_json(self, filename: str) -> Dict:
+        """Safely read JSON file."""
+        file_path = self._get_safe_path(filename)
+        try:
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in {filename}: {e}")
+            raise StorageError(f"Invalid JSON in {filename}") from e
+        except IOError as e:
+            logger.error(f"Error reading {filename}: {e}")
+            raise StorageError(f"Failed to read {filename}") from e
+    
+    def write_json(self, filename: str, data: Dict) -> None:
+        """Safely write JSON file with atomic operation."""
+        file_path = self._get_safe_path(filename)
+        temp_path = file_path.with_suffix('.tmp')
+        
+        try:
+            # Write to temp file first
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            # Atomic rename
+            temp_path.replace(file_path)
+        except IOError as e:
+            logger.error(f"Error writing {filename}: {e}")
+            # Clean up temp file if exists
+            if temp_path.exists():
+                temp_path.unlink()
+            raise StorageError(f"Failed to write {filename}") from e
+
 
 # ============================================================================
 # CONFIGURATION
@@ -185,9 +449,13 @@ def validate_config():
             logger.error(f"Configuration error: {error}")
         raise ValueError(f"Missing required configuration: {', '.join(errors)}")
 
-# Storage files
-STORAGE_FILE = Path(__file__).parent / 'saved_addresses.json'
-HISTORY_FILE = Path(__file__).parent / 'portfolio_history.json'
+# Storage configuration
+STORAGE_DIR = Path(__file__).parent
+STORAGE_FILE = STORAGE_DIR / 'saved_addresses.json'
+HISTORY_FILE = STORAGE_DIR / 'portfolio_history.json'
+
+# Initialize secure storage
+secure_storage = SecureStorage(STORAGE_DIR)
 
 # EVM Chain Configuration - All chains that use ETH as native currency
 ETH_CHAINS = {
@@ -363,102 +631,93 @@ DEFI_PROTOCOLS = {
 
 # Storage Functions
 
+DEFAULT_USER_DATA = {
+    'eth': [], 
+    'btc': [], 
+    'xpub': [],
+    'tokens': [],
+    'track_defi': True
+}
+
+
 def load_saved_addresses(user_id: int) -> dict:
-    """Load saved addresses for a user."""
+    """Load saved addresses for a user with validation."""
     try:
-        if STORAGE_FILE.exists():
-            with open(STORAGE_FILE, 'r') as f:
-                data = json.load(f)
-                user_data = data.get(str(user_id), {
-                    'eth': [], 
-                    'btc': [], 
-                    'xpub': [],
-                    'tokens': [],  # Custom tokens to track
-                    'track_defi': True  # Track DeFi positions by default
-                })
-                # Ensure all keys exist for backward compatibility
-                if 'xpub' not in user_data:
-                    user_data['xpub'] = []
-                if 'tokens' not in user_data:
-                    user_data['tokens'] = []
-                if 'track_defi' not in user_data:
-                    user_data['track_defi'] = True
-                return user_data
-        return {
-            'eth': [], 
-            'btc': [], 
-            'xpub': [],
-            'tokens': [],
-            'track_defi': True
-        }
-    except Exception as e:
+        # Validate user_id
+        user_id = Validator.validate_user_id(user_id)
+        
+        data = secure_storage.read_json('saved_addresses.json')
+        user_data = data.get(str(user_id), DEFAULT_USER_DATA.copy())
+        
+        # Ensure all keys exist for backward compatibility
+        for key, default_value in DEFAULT_USER_DATA.items():
+            if key not in user_data:
+                user_data[key] = default_value if not isinstance(default_value, list) else []
+        
+        return user_data
+    except (StorageError, ValidationError) as e:
         logger.error(f"Error loading saved addresses: {e}")
-        return {
-            'eth': [], 
-            'btc': [], 
-            'xpub': [],
-            'tokens': [],
-            'track_defi': True
-        }
+        return DEFAULT_USER_DATA.copy()
+    except Exception as e:
+        logger.error(f"Unexpected error loading addresses: {e}")
+        return DEFAULT_USER_DATA.copy()
 
 
-def save_addresses(user_id: int, addresses: dict):
-    """Save addresses for a user."""
+def save_addresses(user_id: int, addresses: dict) -> bool:
+    """Save addresses for a user with validation."""
     try:
-        data = {}
-        if STORAGE_FILE.exists():
-            with open(STORAGE_FILE, 'r') as f:
-                data = json.load(f)
+        # Validate user_id
+        user_id = Validator.validate_user_id(user_id)
         
+        data = secure_storage.read_json('saved_addresses.json')
         data[str(user_id)] = addresses
-        
-        with open(STORAGE_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        secure_storage.write_json('saved_addresses.json', data)
         
         return True
-    except Exception as e:
+    except (StorageError, ValidationError) as e:
         logger.error(f"Error saving addresses: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error saving addresses: {e}")
         return False
 
 
 def load_portfolio_history(user_id: int) -> list:
-    """Load portfolio value history for a user."""
+    """Load portfolio value history for a user with validation."""
     try:
-        if HISTORY_FILE.exists():
-            with open(HISTORY_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get(str(user_id), [])
-        return []
-    except Exception as e:
+        user_id = Validator.validate_user_id(user_id)
+        
+        data = secure_storage.read_json('portfolio_history.json')
+        return data.get(str(user_id), [])
+    except (StorageError, ValidationError) as e:
         logger.error(f"Error loading portfolio history: {e}")
         return []
+    except Exception as e:
+        logger.error(f"Unexpected error loading history: {e}")
+        return []
 
 
-def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: float, btc_amount: float, eth_price: float, btc_price: float):
-    """Save a portfolio snapshot for historical tracking."""
+def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: float, btc_amount: float, eth_price: float, btc_price: float) -> bool:
+    """Save a portfolio snapshot for historical tracking with validation."""
     try:
-        data = {}
-        if HISTORY_FILE.exists():
-            with open(HISTORY_FILE, 'r') as f:
-                data = json.load(f)
+        user_id = Validator.validate_user_id(user_id)
         
+        data = secure_storage.read_json('portfolio_history.json')
         user_history = data.get(str(user_id), [])
         
-        # Add new snapshot
+        # Add new snapshot with validated values
         snapshot = {
             'timestamp': datetime.now().isoformat(),
-            'total_value_usd': total_value_usd,
-            'eth_amount': eth_amount,
-            'btc_amount': btc_amount,
-            'eth_price': eth_price,
-            'btc_price': btc_price
+            'total_value_usd': float(total_value_usd),
+            'eth_amount': float(eth_amount),
+            'btc_amount': float(btc_amount),
+            'eth_price': float(eth_price),
+            'btc_price': float(btc_price)
         }
         
         user_history.append(snapshot)
         
-        # Keep only last 30 days of history (one snapshot per check)
-        # If user checks multiple times per day, we keep all
-        # But clean up older than 30 days
+        # Keep only last 30 days of history
         cutoff_date = datetime.now() - timedelta(days=30)
         user_history = [
             s for s in user_history 
@@ -466,13 +725,14 @@ def save_portfolio_snapshot(user_id: int, total_value_usd: float, eth_amount: fl
         ]
         
         data[str(user_id)] = user_history
-        
-        with open(HISTORY_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        secure_storage.write_json('portfolio_history.json', data)
         
         return True
-    except Exception as e:
+    except (StorageError, ValidationError) as e:
         logger.error(f"Error saving portfolio snapshot: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error saving snapshot: {e}")
         return False
 
 
@@ -1978,6 +2238,18 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
 
+async def post_init(application: Application) -> None:
+    """Post-initialization hook - called after the application is initialized."""
+    logger.info("Application initialized successfully")
+
+
+async def post_shutdown(application: Application) -> None:
+    """Post-shutdown hook - cleanup resources after the application stops."""
+    logger.info("Cleaning up resources...")
+    await HTTPClient.close()
+    logger.info("HTTP client session closed")
+
+
 def main():
     """Start the bot."""
     # Check if token is provided
@@ -1986,8 +2258,14 @@ def main():
         print("❌ Error: Please set TELEGRAM_BOT_TOKEN in your .env file")
         return
     
-    # Create the Application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Create the Application with lifecycle handlers
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     
     # Register command handlers
     application.add_handler(CommandHandler("start", start_command))
