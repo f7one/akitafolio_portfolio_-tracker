@@ -2,12 +2,15 @@ import os
 import logging
 import asyncio
 import json
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
+from functools import wraps
+from typing import Optional, Dict, List, Any, Callable
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from web3 import Web3
-import requests
+import aiohttp
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -20,9 +23,167 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
+
+# ============================================================================
+# RETRY DECORATOR FOR NETWORK CALLS
+# ============================================================================
+
+def retry_async(max_retries: int = 3, backoff_factor: float = 1.5, exceptions: tuple = (Exception,)):
+    """Decorator for retrying async functions with exponential backoff."""
+    def decorator(func: Callable):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        wait_time = backoff_factor ** attempt
+                        logger.warning(
+                            f"Attempt {attempt + 1}/{max_retries} failed for {func.__name__}: {e}. "
+                            f"Retrying in {wait_time:.1f}s..."
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"All {max_retries} attempts failed for {func.__name__}: {e}")
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+# ============================================================================
+# HTTP CLIENT SESSION MANAGER
+# ============================================================================
+
+class HTTPClient:
+    """Singleton HTTP client with connection pooling."""
+    _session: Optional[aiohttp.ClientSession] = None
+    _timeout = aiohttp.ClientTimeout(total=15)
+    
+    @classmethod
+    async def get_session(cls) -> aiohttp.ClientSession:
+        if cls._session is None or cls._session.closed:
+            cls._session = aiohttp.ClientSession(timeout=cls._timeout)
+        return cls._session
+    
+    @classmethod
+    async def close(cls):
+        if cls._session and not cls._session.closed:
+            await cls._session.close()
+    
+    @classmethod
+    @retry_async(max_retries=3, backoff_factor=1.5)
+    async def get(cls, url: str, timeout: int = 10) -> Dict[str, Any]:
+        """Make async GET request with retry logic."""
+        session = await cls.get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+            response.raise_for_status()
+            return await response.json()
+    
+    @classmethod
+    @retry_async(max_retries=3, backoff_factor=1.5)
+    async def get_text(cls, url: str, timeout: int = 10) -> str:
+        """Make async GET request returning text with retry logic."""
+        session = await cls.get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+            response.raise_for_status()
+            return await response.text()
+
+
+# ============================================================================
+# INPUT VALIDATION
+# ============================================================================
+
+class ValidationError(Exception):
+    """Custom exception for validation errors."""
+    pass
+
+
+class Validator:
+    """Centralized input validation."""
+    
+    # Bitcoin address patterns
+    BTC_LEGACY_PATTERN = re.compile(r'^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$')
+    BTC_SEGWIT_PATTERN = re.compile(r'^bc1[a-z0-9]{39,59}$', re.IGNORECASE)
+    
+    # xpub patterns
+    XPUB_PREFIXES = ('xpub', 'ypub', 'zpub', 'tpub', 'upub', 'vpub')
+    
+    @staticmethod
+    def validate_eth_address(address: str) -> str:
+        """Validate Ethereum address and return checksummed version."""
+        if not address:
+            raise ValidationError("Address cannot be empty")
+        
+        try:
+            if not Web3.is_address(address):
+                raise ValidationError(f"Invalid Ethereum address format: {address}")
+            return Web3.to_checksum_address(address)
+        except Exception as e:
+            raise ValidationError(f"Invalid Ethereum address: {address}") from e
+    
+    @staticmethod
+    def validate_btc_address(address: str) -> str:
+        """Validate Bitcoin address format."""
+        if not address:
+            raise ValidationError("Address cannot be empty")
+        
+        # Check Legacy (1...) or SegWit (3...)
+        if Validator.BTC_LEGACY_PATTERN.match(address):
+            return address
+        
+        # Check Native SegWit (bc1...)
+        if Validator.BTC_SEGWIT_PATTERN.match(address):
+            return address
+        
+        raise ValidationError(f"Invalid Bitcoin address format: {address}")
+    
+    @staticmethod
+    def validate_xpub(xpub: str) -> str:
+        """Validate xpub/ypub/zpub format."""
+        if not xpub:
+            raise ValidationError("xpub cannot be empty")
+        
+        if not any(xpub.startswith(prefix) for prefix in Validator.XPUB_PREFIXES):
+            raise ValidationError(f"Invalid xpub prefix. Must start with: {', '.join(Validator.XPUB_PREFIXES)}")
+        
+        if not (100 <= len(xpub) <= 120):
+            raise ValidationError(f"Invalid xpub length: {len(xpub)} (expected 100-120)")
+        
+        return xpub
+    
+    @staticmethod
+    def validate_chain(chain: str, valid_chains: Dict) -> str:
+        """Validate chain name."""
+        chain = chain.lower().strip()
+        if chain not in valid_chains:
+            raise ValidationError(f"Unsupported chain: {chain}. Valid chains: {', '.join(valid_chains.keys())}")
+        return chain
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-INFURA_PROJECT_ID = os.getenv('INFURA_PROJECT_ID', 'df20b3f6760a45ea87562328e8b02e19')
+INFURA_PROJECT_ID = os.getenv('INFURA_PROJECT_ID')
+
+# Validate required configuration at startup
+def validate_config():
+    """Validate required environment variables."""
+    errors = []
+    
+    if not TELEGRAM_BOT_TOKEN:
+        errors.append("TELEGRAM_BOT_TOKEN is required")
+    
+    if not INFURA_PROJECT_ID:
+        errors.append("INFURA_PROJECT_ID is required")
+    
+    if errors:
+        for error in errors:
+            logger.error(f"Configuration error: {error}")
+        raise ValueError(f"Missing required configuration: {', '.join(errors)}")
 
 # Storage files
 STORAGE_FILE = Path(__file__).parent / 'saved_addresses.json'
@@ -375,55 +536,39 @@ def calculate_24h_change(user_id: int, current_value_usd: float) -> dict:
 def is_valid_ethereum_address(address: str) -> bool:
     """Validate Ethereum/EVM address format."""
     try:
-        return Web3.is_address(address)
-    except:
+        Validator.validate_eth_address(address)
+        return True
+    except ValidationError:
         return False
 
 
 def is_valid_bitcoin_address(address: str) -> bool:
     """Basic Bitcoin address validation."""
-    if not address:
+    try:
+        Validator.validate_btc_address(address)
+        return True
+    except ValidationError:
         return False
-    
-    if address.startswith('1') or address.startswith('3'):
-        return 26 <= len(address) <= 35
-    elif address.lower().startswith('bc1'):
-        return 42 <= len(address) <= 90
-    
-    return False
 
 
 def is_valid_xpub(xpub: str) -> bool:
     """Validate xpub/ypub/zpub format."""
-    if not xpub:
+    try:
+        Validator.validate_xpub(xpub)
+        return True
+    except ValidationError:
         return False
-    
-    # Check valid prefixes
-    valid_prefixes = ['xpub', 'ypub', 'zpub', 'tpub', 'upub', 'vpub']
-    if not any(xpub.startswith(prefix) for prefix in valid_prefixes):
-        return False
-    
-    # Check length (typically 111 characters)
-    if len(xpub) < 100 or len(xpub) > 120:
-        return False
-    
-    return True
 
 
 async def get_crypto_prices() -> dict:
     """Fetch current ETH and BTC prices in USD from CoinGecko API."""
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'eth': float(data.get('ethereum', {}).get('usd', 0)),
-                'btc': float(data.get('bitcoin', {}).get('usd', 0))
-            }
-        else:
-            logger.warning(f"Failed to fetch crypto prices: {response.status_code}")
-            return {'eth': 0.0, 'btc': 0.0}
+        data = await HTTPClient.get(url, timeout=10)
+        return {
+            'eth': float(data.get('ethereum', {}).get('usd', 0)),
+            'btc': float(data.get('bitcoin', {}).get('usd', 0))
+        }
     except Exception as e:
         logger.error(f"Error fetching crypto prices: {e}")
         return {'eth': 0.0, 'btc': 0.0}
@@ -497,20 +642,17 @@ async def get_bitcoin_balance(address: str) -> dict:
             return {"error": "Invalid Bitcoin address"}
         
         url = f"https://blockchain.info/q/addressbalance/{address}"
-        response = requests.get(url, timeout=10)
+        response_text = await HTTPClient.get_text(url, timeout=10)
         
-        if response.status_code == 200:
-            balance_satoshi = int(response.text)
-            balance_btc = balance_satoshi / 100000000
-            
-            return {
-                "success": True,
-                "address": address,
-                "balance": balance_btc,
-                "currency": "BTC"
-            }
-        else:
-            return {"error": f"API returned status code: {response.status_code}"}
+        balance_satoshi = int(response_text)
+        balance_btc = balance_satoshi / 100000000
+        
+        return {
+            "success": True,
+            "address": address,
+            "balance": balance_btc,
+            "currency": "BTC"
+        }
     
     except Exception as e:
         logger.error(f"Error fetching Bitcoin balance: {e}")
@@ -525,27 +667,22 @@ async def get_xpub_balance(xpub: str) -> dict:
         
         # Blockchain.info xpub balance endpoint
         url = f"https://blockchain.info/balance?active={xpub}"
-        response = requests.get(url, timeout=20)
+        data = await HTTPClient.get(url, timeout=20)
         
-        if response.status_code == 200:
-            data = response.json()
-            
-            if xpub not in data:
-                return {"error": "xpub not found in response"}
-            
-            xpub_data = data[xpub]
-            
-            return {
-                "success": True,
-                "xpub": xpub,
-                "balance": xpub_data.get('final_balance', 0) / 100000000,
-                "total_received": xpub_data.get('total_received', 0) / 100000000,
-                "total_sent": xpub_data.get('total_sent', 0) / 100000000,
-                "transaction_count": xpub_data.get('n_tx', 0),
-                "currency": "BTC"
-            }
-        else:
-            return {"error": f"API returned status code: {response.status_code}"}
+        if xpub not in data:
+            return {"error": "xpub not found in response"}
+        
+        xpub_data = data[xpub]
+        
+        return {
+            "success": True,
+            "xpub": xpub,
+            "balance": xpub_data.get('final_balance', 0) / 100000000,
+            "total_received": xpub_data.get('total_received', 0) / 100000000,
+            "total_sent": xpub_data.get('total_sent', 0) / 100000000,
+            "transaction_count": xpub_data.get('n_tx', 0),
+            "currency": "BTC"
+        }
     
     except Exception as e:
         logger.error(f"Error fetching xpub balance: {e}")
@@ -596,11 +733,8 @@ async def get_token_price(coingecko_id: str) -> float:
     """Fetch token price from CoinGecko."""
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return float(data.get(coingecko_id, {}).get('usd', 0))
-        return 0.0
+        data = await HTTPClient.get(url, timeout=10)
+        return float(data.get(coingecko_id, {}).get('usd', 0))
     except Exception as e:
         logger.error(f"Error fetching price for {coingecko_id}: {e}")
         return 0.0
