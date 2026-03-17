@@ -609,7 +609,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response += f"   Price: ${portfolio.btc_price:,.2f}\n\n"
     
     # Token holdings
-    if portfolio.tokens and portfolio.tokens.total_value_usd > 0:
+    if portfolio.tokens and portfolio.tokens.token_count > 0:
         response += f"🪙 **Token Holdings**\n"
         response += f"   Total Value: ${portfolio.tokens.total_value_usd:,.2f}\n"
         response += f"   Token Count: {portfolio.tokens.token_count}\n"
