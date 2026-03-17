@@ -169,16 +169,24 @@ class TokenService:
             
             all_tokens = list(token_aggregated.values())
         
-        # Calculate totals
+        # Calculate totals (including dust)
         total_value = sum(t.value_usd for t in all_tokens)
         
+        # Filter out dust tokens (< $1 USD) from display
+        dust_threshold = 1.0
+        visible_tokens = [t for t in all_tokens if t.value_usd >= dust_threshold]
+        dust_tokens = [t for t in all_tokens if t.value_usd < dust_threshold]
+        hidden_dust_value = sum(t.value_usd for t in dust_tokens)
+        
         # Sort by value and get top holdings
-        all_tokens.sort(key=lambda x: x.value_usd, reverse=True)
-        top_holdings = all_tokens[:5]
+        visible_tokens.sort(key=lambda x: x.value_usd, reverse=True)
+        top_holdings = visible_tokens[:5]
         
         return TokenPortfolio(
             total_value_usd=total_value,
-            token_count=len(all_tokens),
-            tokens=all_tokens,
-            top_holdings=top_holdings
+            token_count=len(visible_tokens),
+            tokens=visible_tokens,
+            top_holdings=top_holdings,
+            hidden_dust_count=len(dust_tokens),
+            hidden_dust_value_usd=hidden_dust_value,
         )
