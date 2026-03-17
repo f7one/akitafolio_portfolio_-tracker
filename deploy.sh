@@ -34,6 +34,8 @@ tar -czf bot-deployment.tar.gz \
     --exclude='portfolio_history.json' \
     --exclude='bot-deployment.tar.gz' \
     bot.py \
+    akitafolio \
+    cli \
     requirements.txt \
     .env \
     *.md
@@ -69,6 +71,14 @@ ssh $SERVER_USER@$SERVER_IP << 'ENDSSH'
     pip install --upgrade pip
     pip install -r requirements.txt
     
+    echo "Creating CLI wrapper script..."
+    cat > /usr/local/bin/akitafolio << 'CLIPEOF'
+#!/bin/bash
+cd /opt/tg-balance-bot
+exec /opt/tg-balance-bot/venv/bin/python -m cli.main "$@"
+CLIPEOF
+    chmod +x /usr/local/bin/akitafolio
+    
     echo "Creating systemd service..."
     cat > /etc/systemd/system/tg-balance-bot.service << 'EOF'
 [Unit]
@@ -88,10 +98,10 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
     
-    echo "Enabling and starting service..."
+    echo "Enabling and restarting service..."
     systemctl daemon-reload
     systemctl enable tg-balance-bot
-    systemctl start tg-balance-bot
+    systemctl restart tg-balance-bot
     
     echo "✅ Akitafolio deployed and started!"
     echo ""
@@ -107,6 +117,10 @@ echo "   Check status:  ssh $SERVER_USER@$SERVER_IP 'systemctl status tg-balance
 echo "   View logs:     ssh $SERVER_USER@$SERVER_IP 'journalctl -u tg-balance-bot -f'"
 echo "   Restart bot:   ssh $SERVER_USER@$SERVER_IP 'systemctl restart tg-balance-bot'"
 echo "   Stop bot:      ssh $SERVER_USER@$SERVER_IP 'systemctl stop tg-balance-bot'"
+echo ""
+echo "📋 CLI usage:"
+echo "   ssh $SERVER_USER@$SERVER_IP 'akitafolio --help'"
+echo "   ssh $SERVER_USER@$SERVER_IP 'akitafolio portfolio --user-id 123'"
 echo ""
 
 # Cleanup
