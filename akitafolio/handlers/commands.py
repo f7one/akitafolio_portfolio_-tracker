@@ -34,27 +34,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 **Balance Commands:**\n"
         "/eth <address> - Check ETH balance across all chains\n"
         "/btc <address> - Check Bitcoin balance\n"
-        "/xpub <xpub_key> - Check HD wallet balance\n\n"
+        "/xpub <xpub\\_key> - Check HD wallet balance\n\n"
         "💼 **Portfolio Management:**\n"
-        "/add_eth <addr1> <addr2> ... - Save ETH address(es)\n"
-        "/add_btc <addr1> <addr2> ... - Save BTC address(es)\n"
-        "/add_xpub <key1> <key2> ... - Save HD wallet(s)\n"
+        "/add\\_eth <addr1> <addr2> ... - Save ETH address(es)\n"
+        "/add\\_btc <addr1> <addr2> ... - Save BTC address(es)\n"
+        "/add\\_xpub <key1> <key2> ... - Save HD wallet(s)\n"
         "/portfolio - View total portfolio value\n"
         "/addresses - List your saved addresses\n"
-        "/remove_eth <address> - Remove ETH address\n"
-        "/remove_btc <address> - Remove BTC address\n"
-        "/remove_xpub <xpub_key> - Remove HD wallet\n\n"
+        "/remove\\_eth <address> - Remove ETH address\n"
+        "/remove\\_btc <address> - Remove BTC address\n"
+        "/remove\\_xpub <xpub\\_key> - Remove HD wallet\n\n"
         "🪙 **Token & DeFi Tracking:**\n"
         "/tokens - View all ERC20 token balances\n"
         "/defi - View DeFi positions (Aave, etc.)\n"
-        "/add_token - Add custom ERC20 token\n"
-        "/toggle_defi - Enable/disable DeFi tracking\n\n"
+        "/add\\_token - Add custom ERC20 token\n"
+        "/toggle\\_defi - Enable/disable DeFi tracking\n\n"
         "ℹ️ **Other Commands:**\n"
         "/chains - List all supported chains\n"
+        "/convert <xpub> - Convert xpub/ypub/zpub formats\n"
         "/help - Show detailed help\n\n"
         "💡 Tip: You can add multiple addresses at once!"
     )
-    await update.message.reply_text(welcome_message)
+    await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,12 +65,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**1️⃣ Quick Balance Check**\n"
         "   /eth <address> - Check ETH across all chains\n"
         "   /btc <address> - Check Bitcoin balance\n"
-        "   /xpub <xpub_key> - Check HD wallet balance\n\n"
+        "   /xpub <xpub\\_key> - Check HD wallet balance\n\n"
         "**2️⃣ Portfolio Tracking**\n"
         "   a) Save your addresses:\n"
-        "      /add_eth 0xAddr1 0xAddr2 0xAddr3\n"
-        "      /add_btc btcAddr1 btcAddr2\n"
-        "      /add_xpub xpub6... ypub6...\n\n"
+        "      /add\\_eth 0xAddr1 0xAddr2 0xAddr3\n"
+        "      /add\\_btc btcAddr1 btcAddr2\n"
+        "      /add\\_xpub xpub6... ypub6...\n\n"
         "   b) View total portfolio:\n"
         "      /portfolio\n"
         "      Shows total ETH + BTC + Tokens + DeFi!\n"
@@ -79,15 +80,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   Automatically tracks popular tokens\n\n"
         "**4️⃣ DeFi Positions**\n"
         "   /defi - View lending/borrowing positions\n"
-        "   /toggle_defi - Enable/disable DeFi tracking\n"
+        "   /toggle\\_defi - Enable/disable DeFi tracking\n"
         "   Supports: Aave V3 on multiple chains\n\n"
+        "**5️⃣ Tools**\n"
+        "   /convert <xpub> - Convert xpub/ypub/zpub\n"
+        "   (Ledger users: auto-detection built-in!)\n\n"
         "💰 **Features:**\n"
         "• Track multiple addresses\n"
         "• Aggregated ETH from all L1/L2 chains\n"
         "• ERC20 tokens (USDT, USDC, DAI, etc.)\n"
         "• DeFi positions (Aave V3)\n"
         "• 24-hour portfolio change tracking\n"
-        "• Real-time prices from CoinGecko"
+        "• Real-time prices from CoinGecko\n"
+        "• Auto-detect SegWit format for xpub"
     )
     await update.message.reply_text(help_message, parse_mode='Markdown')
 
@@ -112,6 +117,70 @@ async def chains_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chains_info += f"\n📊 Total: {len(all_chains)} EVM chains + Bitcoin"
     
     await update.message.reply_text(chains_info, parse_mode='Markdown')
+
+
+async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Convert xpub between different formats (xpub/ypub/zpub)."""
+    from akitafolio.services.bitcoin import convert_xpub, XPUB_VERSIONS
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🔄 **xpub Format Converter**\n\n"
+            "Convert extended public keys between formats.\n\n"
+            "**Usage:** /convert <xpub\\_key>\n\n"
+            "**Supported formats:**\n"
+            "• `xpub` - Legacy (P2PKH)\n"
+            "• `ypub` - SegWit wrapped (P2SH-P2WPKH)\n"
+            "• `zpub` - Native SegWit (P2WPKH)\n\n"
+            "💡 Ledger exports xpub, but SegWit wallets need zpub/ypub "
+            "for correct balance lookup.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    xpub = context.args[0]
+    
+    # Validate input
+    valid_prefixes = ('xpub', 'ypub', 'zpub')
+    if not any(xpub.startswith(p) for p in valid_prefixes):
+        await update.message.reply_text(
+            "❌ Invalid key format.\n"
+            "Key must start with xpub, ypub, or zpub."
+        )
+        return
+    
+    if not (100 <= len(xpub) <= 120):
+        await update.message.reply_text("❌ Invalid key length.")
+        return
+    
+    # Detect current format
+    current_format = None
+    for prefix in valid_prefixes:
+        if xpub.startswith(prefix):
+            current_format = prefix
+            break
+    
+    # Convert to all formats
+    response = "🔄 **xpub Format Conversion**\n\n"
+    response += f"**Input:** `{xpub[:20]}...`\n"
+    response += f"**Current format:** {current_format}\n\n"
+    response += "**Converted keys:**\n\n"
+    
+    for target in valid_prefixes:
+        if target == current_format:
+            response += f"**{target}** (original):\n"
+            response += f"`{xpub}`\n\n"
+        else:
+            converted = convert_xpub(xpub, target)
+            if converted:
+                response += f"**{target}**:\n"
+                response += f"`{converted}`\n\n"
+            else:
+                response += f"**{target}**: ❌ Conversion failed\n\n"
+    
+    response += "💡 Copy the format you need and use it in block explorers or wallets."
+    
+    await update.message.reply_text(response, parse_mode='Markdown')
 
 
 # ============================================================================
@@ -204,14 +273,19 @@ async def xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "⚠️ Please provide an xpub/ypub/zpub key.\n"
-            "Usage: /xpub <xpub_key>\n"
-            "Example: /xpub xpub6CUG..."
+            "Usage: /xpub <xpub\\_key>\n"
+            "Example: /xpub xpub6CUG...\n\n"
+            "💡 Tip: Ledger users can use their xpub directly - "
+            "the bot will auto-detect SegWit format!"
         )
         return
     
     xpub = context.args[0]
     
-    processing_msg = await update.message.reply_text("🔄 Fetching HD wallet balance... ⏳")
+    processing_msg = await update.message.reply_text(
+        "🔄 Fetching HD wallet balance...\n"
+        "Trying different address formats ⏳"
+    )
     
     result = await BitcoinService.get_xpub_balance(xpub)
     prices = await PriceService.get_crypto_prices()
@@ -224,8 +298,16 @@ async def xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usd_value = balance * prices.btc if prices.btc > 0 else 0
     
     response = f"🔑 **HD Wallet Balance**\n\n"
-    response += f"xpub: `{xpub[:15]}...{xpub[-10:]}`\n\n"
-    response += f"💰 **Balance: {balance:.8f} BTC**\n"
+    response += f"Key: `{xpub[:15]}...{xpub[-10:]}`\n"
+    
+    # Show which format was used if conversion happened
+    used_format = result.get('used_format')
+    if used_format and result.get('converted_key'):
+        response += f"📍 Format: {used_format} (auto-detected)\n"
+    elif used_format:
+        response += f"📍 Format: {used_format}\n"
+    
+    response += f"\n💰 **Balance: {balance:.8f} BTC**\n"
     if prices.btc > 0:
         response += f"💵 **USD Value: ${usd_value:,.2f}**\n"
     response += f"\n📊 Transactions: {result.get('transaction_count', 0)}"
@@ -586,7 +668,13 @@ async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response += f"   Value: ${token.value_usd:,.2f}\n\n"
     
     if token_portfolio.token_count > 15:
-        response += f"...and {token_portfolio.token_count - 15} more tokens"
+        response += f"...and {token_portfolio.token_count - 15} more tokens\n"
+    
+    if token_portfolio.hidden_dust_count > 0:
+        response += (
+            f"\n🔹 {token_portfolio.hidden_dust_count} token(s) hidden "
+            f"(< $1.00, total ${token_portfolio.hidden_dust_value_usd:,.2f})"
+        )
     
     await processing_msg.edit_text(response, parse_mode='Markdown')
 

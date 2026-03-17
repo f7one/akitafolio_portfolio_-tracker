@@ -142,6 +142,8 @@ class TokenPortfolio(BaseModel):
     token_count: int = 0
     tokens: List[TokenBalance] = Field(default_factory=list)
     top_holdings: List[TokenBalance] = Field(default_factory=list)
+    hidden_dust_count: int = 0
+    hidden_dust_value_usd: float = 0.0
 
 
 # ============================================================================
