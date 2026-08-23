@@ -71,17 +71,23 @@ window. Подробный порядок работ,
 
 ## Epic 1 — воспроизводимая разработка и настоящие тесты
 
-**Статус:** blocked
+**Статус:** done
+**План исполнения:** [EPIC_1_EXECUTION_PLAN.md](EPIC_1_EXECUTION_PLAN.md)
 
-- [ ] Выбрать единую production baseline Python (предложение: 3.11 или 3.12).
-- [ ] Добавить `pyproject.toml`, dev-зависимости и воспроизводимый lock-файл.
-- [ ] Подключить `pytest`, `pytest-asyncio`, coverage, Ruff и type checker.
-- [ ] Переписать тесты так, чтобы они вызывали production-код, и исправить
-  обнаружение тестов (`unittest discover` сейчас находит 0 тестов).
-- [ ] Добавить CI: syntax, lint, types, unit/integration tests и coverage gate.
+- [x] Зафиксировать production baseline Python 3.12 и `uv` в ADR-0002.
+- [x] Добавить `pyproject.toml`, dev dependency group, `uv.lock` и экспорт
+  `requirements.txt` из lock.
+- [x] Подключить pytest, pytest-asyncio, pytest-cov, Ruff, mypy и pre-commit
+  project-local через `uv`.
+- [x] Переписать тесты: pytest находит 9 тестов, вызывающих production
+  formatter/service code; дубли formatter-логики удалены.
+- [x] Добавить GitHub Actions: locked sync, `pip check`, Ruff, mypy и pytest с
+  coverage gate 20%; workflow проверен локальным actionlint.
 
-**Блокер:** в текущем окружении отсутствуют pytest, Ruff и mypy/pyright; установка
-не выполняется без разрешения владельца.
+**Остаточный риск:** full mypy baseline обнаруживает legacy errors вне текущего
+initial scope (`akitafolio/models.py` и `tests`); расширение type coverage и
+исправление этих ошибок выполняются последовательно в следующих технических
+задачах, без blanket ignore.
 
 ## Epic 2 — P1 security и correctness
 

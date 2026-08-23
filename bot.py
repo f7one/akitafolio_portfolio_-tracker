@@ -9,44 +9,42 @@ This is the refactored entry point using the modular package structure.
 """
 
 import logging
-import asyncio
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler
 
-from akitafolio.config import settings
-from akitafolio.http_client import HTTPClient, RedactingFormatter, SecretsFilter
 from akitafolio.cache import cache_manager
+from akitafolio.config import settings
 from akitafolio.handlers import (
-    start_command,
-    help_command,
+    add_btc_command,
+    add_eth_command,
+    add_token_command,
+    add_xpub_command,
+    addresses_command,
+    btc_command,
     chains_command,
     convert_command,
-    eth_command,
-    btc_command,
-    xpub_command,
-    add_eth_command,
-    add_btc_command,
-    add_xpub_command,
-    remove_eth_command,
-    remove_btc_command,
-    remove_xpub_command,
-    addresses_command,
-    portfolio_command,
-    tokens_command,
     defi_command,
-    add_token_command,
-    toggle_defi_command,
     error_handler,
+    eth_command,
+    help_command,
+    portfolio_command,
+    remove_btc_command,
+    remove_eth_command,
+    remove_xpub_command,
+    start_command,
+    toggle_defi_command,
+    tokens_command,
+    xpub_command,
 )
+from akitafolio.http_client import HTTPClient, RedactingFormatter, SecretsFilter
+
 
 def configure_logging() -> None:
     """Configure process-wide logging without exposing API URLs or credentials."""
     handler = logging.StreamHandler()
     handler.addFilter(SecretsFilter())
-    handler.setFormatter(
-        RedactingFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    )
+    handler.setFormatter(RedactingFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 
     # httpx emits request URLs at INFO; Telegram API URLs contain the bot token.
@@ -84,7 +82,7 @@ def main():
         for error in errors:
             print(f"   - {error}")
         return
-    
+
     # Create the Application with lifecycle handlers
     application = (
         Application.builder()
@@ -93,7 +91,7 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
-    
+
     # Register command handlers
     handlers = [
         ("start", start_command),
@@ -116,28 +114,28 @@ def main():
         ("add_token", add_token_command),
         ("toggle_defi", toggle_defi_command),
     ]
-    
+
     for command, handler in handlers:
         application.add_handler(CommandHandler(command, handler))
-    
+
     # Register error handler
     application.add_error_handler(error_handler)
-    
+
     # Start the bot
     all_chains = settings.get_all_chains()
-    
+
     logger.info("Starting Akitafolio...")
     print("🐕 Akitafolio is running...")
     print(f"📡 Monitoring {len(all_chains)} EVM chains + Bitcoin")
-    print(f"💼 Portfolio tracking enabled (ETH, BTC, xpub)")
-    print(f"🔑 HD Wallet support via Blockchain.info API")
-    print(f"📊 24h portfolio change tracking enabled")
-    print(f"🪙 ERC20 token tracking enabled")
-    print(f"🏦 DeFi position tracking enabled (Aave V3)")
-    print(f"⚡ Caching layer active")
-    
+    print("💼 Portfolio tracking enabled (ETH, BTC, xpub)")
+    print("🔑 HD Wallet support via Blockchain.info API")
+    print("📊 24h portfolio change tracking enabled")
+    print("🪙 ERC20 token tracking enabled")
+    print("🏦 DeFi position tracking enabled (Aave V3)")
+    print("⚡ Caching layer active")
+
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

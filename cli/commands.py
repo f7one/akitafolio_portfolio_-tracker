@@ -9,16 +9,14 @@ wrappers for the CLI interface.
 from typing import Optional
 
 from akitafolio.config import settings
-from akitafolio.models import UserAddresses
-from akitafolio.storage import load_user_addresses, save_user_addresses
-from akitafolio.services.prices import PriceService
-from akitafolio.services.blockchain import BlockchainService
+from akitafolio.http_client import HTTPClient
 from akitafolio.services.bitcoin import BitcoinService, convert_xpub
-from akitafolio.services.tokens import TokenService
+from akitafolio.services.blockchain import BlockchainService
 from akitafolio.services.defi import DefiService
 from akitafolio.services.portfolio import PortfolioService
-from akitafolio.http_client import HTTPClient
-
+from akitafolio.services.prices import PriceService
+from akitafolio.services.tokens import TokenService
+from akitafolio.storage import load_user_addresses, save_user_addresses
 from cli import output
 
 
@@ -210,13 +208,13 @@ async def cmd_tokens(user_id: int) -> None:
     addresses = load_user_addresses(user_id)
 
     if not addresses.eth:
-        output.console.print("[dim]No ETH addresses saved. Add addresses with [bold]add-eth[/bold] to track tokens.[/dim]")
+        output.console.print(
+            "[dim]No ETH addresses saved. Add addresses with [bold]add-eth[/bold] to track tokens.[/dim]"
+        )
         return
 
     with output.console.status("Fetching token balances..."):
-        token_portfolio = await TokenService.get_all_token_balances(
-            addresses.eth, addresses.tokens
-        )
+        token_portfolio = await TokenService.get_all_token_balances(addresses.eth, addresses.tokens)
 
     output.print_tokens(token_portfolio)
 
@@ -225,7 +223,9 @@ async def cmd_defi(user_id: int) -> None:
     addresses = load_user_addresses(user_id)
 
     if not addresses.eth:
-        output.console.print("[dim]No ETH addresses saved. Add addresses with [bold]add-eth[/bold] to track DeFi.[/dim]")
+        output.console.print(
+            "[dim]No ETH addresses saved. Add addresses with [bold]add-eth[/bold] to track DeFi.[/dim]"
+        )
         return
 
     with output.console.status("Fetching DeFi positions..."):

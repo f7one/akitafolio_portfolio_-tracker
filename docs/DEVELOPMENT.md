@@ -18,8 +18,8 @@ Complete guide for developers contributing to Akitafolio.
 
 ### Prerequisites
 
-- Python 3.8+
-- pip and virtualenv
+- Python 3.12
+- uv
 - Git
 
 ### Development Setup
@@ -29,22 +29,24 @@ Complete guide for developers contributing to Akitafolio.
 git clone https://github.com/f7one/akitafolio_portfolio_-tracker.git
 cd tg-balance-bot
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install dev dependencies (optional)
-pip install pydantic pydantic-settings
+# Install locked runtime and development dependencies
+uv sync --all-groups
 
 # Create .env file
 cp config_example.txt .env
 # Edit .env with your API keys
 
 # Run the bot
-python bot_refactored.py
+uv run python bot.py
+```
+
+### Quality checks
+
+```bash
+uv run ruff check .
+uv run mypy
+uv run pytest --cov
+uv run pre-commit run --all-files
 ```
 
 ---

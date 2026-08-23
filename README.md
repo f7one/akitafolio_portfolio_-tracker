@@ -16,15 +16,23 @@ Track your ETH, BTC, ERC20 tokens, and DeFi positions across 8 EVM chains + Bitc
 ## 🚀 Quick Start
 
 ```bash
-# Install
-pip install -r requirements.txt
+# Install locked runtime and development dependencies
+uv sync --all-groups
 
 # Configure
 cp config_example.txt .env
 # Edit .env with your TELEGRAM_BOT_TOKEN and INFURA_PROJECT_ID
 
 # Run
-python bot_refactored.py
+uv run python bot.py
+```
+
+## ✅ Development checks
+
+```bash
+uv run ruff check .
+uv run mypy
+uv run pytest --cov
 ```
 
 ## 📋 Commands
@@ -46,6 +54,7 @@ python bot_refactored.py
 - **[Deployment Guide](./docs/DEPLOYMENT.md)** - Server deployment
 - **[Changelog](./docs/CHANGELOG.md)** - Version history
 - **[Development Guide](./docs/DEVELOPMENT.md)** - For contributors
+- **[ADR-0002](./docs/adr/0002-python-312-and-uv.md)** - Python and dependency workflow
 
 ## 🏗️ Architecture
 

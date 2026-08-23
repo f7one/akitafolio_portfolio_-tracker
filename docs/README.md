@@ -20,7 +20,7 @@ A powerful Telegram bot that tracks your complete crypto portfolio across multip
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.12
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
 - Infura Project ID (free at [infura.io](https://infura.io))
 
@@ -31,12 +31,8 @@ A powerful Telegram bot that tracks your complete crypto portfolio across multip
 git clone https://github.com/f7one/akitafolio_portfolio_-tracker.git
 cd tg-balance-bot
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Install locked runtime and development dependencies
+uv sync --all-groups
 
 # Configure environment
 cp config_example.txt .env
@@ -55,7 +51,7 @@ INFURA_PROJECT_ID=your_infura_project_id
 ### Run the Bot
 
 ```bash
-python bot_refactored.py
+uv run python bot.py
 ```
 
 ## 📋 Commands

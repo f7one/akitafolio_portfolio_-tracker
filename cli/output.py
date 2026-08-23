@@ -5,17 +5,16 @@ Provides formatted display functions matching all TG bot message formats
 using the rich library for tables, panels, and colored output.
 """
 
-from typing import List, Optional
+from typing import Optional
 
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
 from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
+from akitafolio.config import settings
 from akitafolio.models import (
     AggregatedBalance,
-    ChainBalance,
     CryptoPrices,
     DefiPortfolio,
     Portfolio,
@@ -23,7 +22,6 @@ from akitafolio.models import (
     TokenPortfolio,
     UserAddresses,
 )
-from akitafolio.config import settings
 
 console = Console()
 
@@ -77,11 +75,13 @@ def print_convert_result(
     conversions: dict[str, Optional[str]],
 ) -> None:
     """Display xpub format conversion results."""
-    console.print(Panel(
-        f"[bold]Input:[/bold] {xpub[:20]}...\n"
-        f"[bold]Current format:[/bold] {current_format}",
-        title="xpub Format Conversion",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Input:[/bold] {xpub[:20]}...\n"
+            f"[bold]Current format:[/bold] {current_format}",
+            title="xpub Format Conversion",
+        )
+    )
 
     for target, converted in conversions.items():
         if target == current_format:
@@ -108,10 +108,12 @@ def print_eth_balance(
 
     total_usd = result.total_eth * prices.eth if prices.eth > 0 else 0
 
-    console.print(Panel(
-        f"Address: {address[:10]}...{address[-8:]}",
-        title="Multi-Chain Balance Summary",
-    ))
+    console.print(
+        Panel(
+            f"Address: {address[:10]}...{address[-8:]}",
+            title="Multi-Chain Balance Summary",
+        )
+    )
 
     summary = Table(box=box.SIMPLE)
     summary.add_column("Metric", style="bold")
@@ -153,10 +155,12 @@ def print_btc_balance(
     """Display Bitcoin balance."""
     usd_value = balance * prices.btc if prices.btc > 0 else 0
 
-    console.print(Panel(
-        f"Address: {address[:10]}...{address[-8:]}",
-        title="Bitcoin Balance",
-    ))
+    console.print(
+        Panel(
+            f"Address: {address[:10]}...{address[-8:]}",
+            title="Bitcoin Balance",
+        )
+    )
 
     table = Table(box=box.SIMPLE)
     table.add_column("Metric", style="bold")
@@ -222,7 +226,9 @@ def print_addresses(addresses: UserAddresses) -> None:
     """Display all saved addresses."""
     if not addresses.has_addresses():
         console.print("[dim]No saved addresses yet.[/dim]")
-        console.print("Use [bold]add-eth[/bold], [bold]add-btc[/bold], or [bold]add-xpub[/bold] to add addresses.")
+        console.print(
+            "Use [bold]add-eth[/bold], [bold]add-btc[/bold], or [bold]add-xpub[/bold] to add addresses."
+        )
         return
 
     console.print(Panel.fit("[bold]Your Saved Addresses[/bold]"))
@@ -310,7 +316,7 @@ def print_portfolio(portfolio: Portfolio, change: PortfolioChange) -> None:
             console.print(f"  {token.symbol}: ${token.value_usd:,.2f}")
 
     if portfolio.defi and portfolio.defi.position_count > 0:
-        console.print(f"\n[bold]DeFi Summary:[/bold]")
+        console.print("\n[bold]DeFi Summary:[/bold]")
         console.print(f"  Collateral: ${portfolio.defi.total_collateral_usd:,.2f}")
         console.print(f"  Debt: ${portfolio.defi.total_debt_usd:,.2f}")
         console.print(f"  Net: ${portfolio.defi.total_net_value_usd:,.2f}")
@@ -322,11 +328,13 @@ def print_tokens(token_portfolio: TokenPortfolio) -> None:
         console.print("[dim]No token balances found.[/dim]")
         return
 
-    console.print(Panel.fit(
-        f"[bold]Total Value: ${token_portfolio.total_value_usd:,.2f}[/bold]  |  "
-        f"Tokens: {token_portfolio.token_count}",
-        title="Your Token Balances",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold]Total Value: ${token_portfolio.total_value_usd:,.2f}[/bold]  |  "
+            f"Tokens: {token_portfolio.token_count}",
+            title="Your Token Balances",
+        )
+    )
 
     table = Table(box=box.ROUNDED)
     table.add_column("Token", style="bold")
@@ -360,11 +368,13 @@ def print_defi(defi_portfolio: DefiPortfolio) -> None:
         console.print("[dim]No DeFi positions found.[/dim]")
         return
 
-    console.print(Panel.fit(
-        f"[bold]Net Value: ${defi_portfolio.total_net_value_usd:,.2f}[/bold]  |  "
-        f"Positions: {defi_portfolio.position_count}",
-        title="Your DeFi Positions",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold]Net Value: ${defi_portfolio.total_net_value_usd:,.2f}[/bold]  |  "
+            f"Positions: {defi_portfolio.position_count}",
+            title="Your DeFi Positions",
+        )
+    )
 
     console.print(
         f"  Collateral: ${defi_portfolio.total_collateral_usd:,.2f}  |  "

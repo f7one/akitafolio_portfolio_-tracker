@@ -18,6 +18,7 @@ from cli import commands
 
 def async_command(f):
     """Decorator to run an async click command function."""
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         try:
@@ -25,6 +26,7 @@ def async_command(f):
         except KeyboardInterrupt:
             click.echo("\nInterrupted.")
             sys.exit(130)
+
     return wrapper
 
 
