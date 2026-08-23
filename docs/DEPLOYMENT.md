@@ -2,6 +2,64 @@
 
 Complete guide for deploying Akitafolio to a production server.
 
+> [!WARNING]
+> The current `deploy.sh` is not approved for production: it archives `.env`,
+> uses a predictable temporary path and installs a root service. Do not run it
+> until Epic 5 in the [engineering roadmap](./ROADMAP.md) is complete.
+
+## Current production migration
+
+The accepted production topology is documented in
+[ADR-0001](./adr/0001-separate-production-vps.md). Epic 0 moves the bot from the
+shared VPS to the dedicated VPS `72.56.120.66` in Timeweb Cloud; its former Outline VPN must be
+inventoried and removed only after explicit owner confirmation. The website and
+its Docker runtime are out of scope.
+
+### Migration invariants
+
+- Verify the new VPS host-key fingerprint through the provider console before
+  accepting it locally.
+- Keep both the dedicated root SSH key and owner-approved root password login.
+  Disable empty and keyboard-interactive passwords; require firewall controls,
+  fail2ban, reduced authentication attempts and SSH log monitoring.
+- Run the bot as a dedicated non-root `akitafolio` service account.
+- Keep the systemd `EnvironmentFile` outside the code tree as `root:root` mode
+  `0600`; keep application JSON data as `akitafolio` mode `0600`.
+- Do not expose application ports and do not install the bot in the website's
+  Docker/Compose environment.
+- Do not copy the old `.env`. Create rotated production credentials only after
+  sensitive URL logging is disabled.
+- Transfer `saved_addresses.json` and `portfolio_history.json` directly over
+  verified SSH while the old service is stopped; compare SHA-256 checksums.
+- Never place `.env` or JSON data in Git, `/tmp`, or a deployment archive.
+- Never run old and new Telegram polling processes at the same time.
+
+### Cutover sequence
+
+1. Harden SSH/firewall and create the service and operator accounts.
+2. Install the reviewed application and pinned dependencies.
+3. Configure systemd sandboxing and verify it with
+   `systemd-analyze security tg-balance-bot.service`.
+4. Stop the old service and calculate checksums without printing file contents.
+5. Transfer and verify both JSON data files over SSH.
+6. Add newly rotated secrets using a non-logging interactive mechanism.
+7. Start one service instance and run the Epic 0 test checklist.
+8. Keep the old installation stopped until the owner approves decommissioning.
+
+The exact operational commands will be added after the target host baseline and
+file layout have been verified. Do not copy commands from the legacy section
+below to the new production VPS.
+
+**Execution status (2026-08-23):** the dedicated service is enabled and active;
+the legacy service is stopped and disabled. Epic 0 cutover is accepted; retain
+the legacy application only for the separately approved rollback window. Do not
+run the legacy commands below on either VPS.
+
+## Legacy deployment reference
+
+The remaining guide describes the old shared-host deployment and is retained
+temporarily for rollback context. It is not the approved target configuration.
+
 ## 📋 Prerequisites
 
 Before deploying, ensure you have:

@@ -23,22 +23,41 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class SecretsFilter(logging.Filter):
-    """Filter to mask sensitive data in logs."""
-    
+    """Redact credentials and public wallet identifiers before they reach logs."""
+
     SENSITIVE_PATTERNS = [
-        (re.compile(r'(bot|token)[=:\s]*["\']?([a-zA-Z0-9_-]{30,})["\']?', re.IGNORECASE), r'\1=***MASKED***'),
-        (re.compile(r'(api[_-]?key|secret|password|infura)[=:\s]*["\']?([a-zA-Z0-9_-]{10,})["\']?', re.IGNORECASE), r'\1=***MASKED***'),
-        (re.compile(r'(0x[a-fA-F0-9]{40})', re.IGNORECASE), lambda m: m.group(1)[:10] + '...' + m.group(1)[-4:]),
+        # Telegram URL embeds the whole bot token in its path.
+        (re.compile(r'bot\d{8,12}:[A-Za-z0-9_-]{20,}', re.IGNORECASE), 'bot***MASKED***'),
+        # Infura project IDs appear as the final /v3/<project-id> URL segment.
+        (re.compile(r'(/v3/)[A-Za-z0-9_-]{16,}(?=[/?\s"\']|$)', re.IGNORECASE), r'\1***MASKED***'),
+        (re.compile(r'((?:api[_-]?key|secret|password|token|infura)\s*[=:]\s*)["\']?[^\s&"\']+', re.IGNORECASE), r'\1***MASKED***'),
+        (re.compile(r'\b(?:xpub|ypub|zpub|tpub|upub|vpub)[1-9A-HJ-NP-Za-km-z]{20,}\b'), 'xpub***MASKED***'),
+        (re.compile(r'\b(?:bc1|tb1)[ac-hj-np-z02-9]{20,}\b', re.IGNORECASE), 'btc***MASKED***'),
+        (re.compile(r'\b(?:[13])[1-9A-HJ-NP-Za-km-z]{25,34}\b'), 'btc***MASKED***'),
+        (re.compile(r'\b0x[a-fA-F0-9]{40}\b'), '0x***MASKED***'),
     ]
-    
-    def filter(self, record):
-        if hasattr(record, 'msg') and isinstance(record.msg, str):
-            for pattern, replacement in self.SENSITIVE_PATTERNS:
-                if callable(replacement):
-                    record.msg = pattern.sub(replacement, record.msg)
-                else:
-                    record.msg = pattern.sub(replacement, record.msg)
+
+    @classmethod
+    def redact(cls, value: object) -> str:
+        """Return a safe string for logs without mutating caller-owned objects."""
+        text = str(value)
+        for pattern, replacement in cls.SENSITIVE_PATTERNS:
+            text = pattern.sub(replacement, text)
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # ``record.getMessage()`` resolves %-style logging arguments. Clearing
+        # args afterwards prevents a handler from formatting the raw values again.
+        record.msg = self.redact(record.getMessage())
+        record.args = ()
         return True
+
+
+class RedactingFormatter(logging.Formatter):
+    """Apply redaction to the complete rendered record, including tracebacks."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return SecretsFilter.redact(super().format(record))
 
 
 # ============================================================================

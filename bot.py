@@ -15,7 +15,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler
 
 from akitafolio.config import settings
-from akitafolio.http_client import HTTPClient, SecretsFilter
+from akitafolio.http_client import HTTPClient, RedactingFormatter, SecretsFilter
 from akitafolio.cache import cache_manager
 from akitafolio.handlers import (
     start_command,
@@ -40,13 +40,22 @@ from akitafolio.handlers import (
     error_handler,
 )
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+def configure_logging() -> None:
+    """Configure process-wide logging without exposing API URLs or credentials."""
+    handler = logging.StreamHandler()
+    handler.addFilter(SecretsFilter())
+    handler.setFormatter(
+        RedactingFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    )
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
+    # httpx emits request URLs at INFO; Telegram API URLs contain the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+configure_logging()
 logger = logging.getLogger(__name__)
-logger.addFilter(SecretsFilter())
 
 
 async def post_init(application: Application) -> None:

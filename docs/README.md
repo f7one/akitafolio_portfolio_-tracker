@@ -157,6 +157,9 @@ akitafolio/
 ## 📚 Documentation
 
 - [Deployment Guide](./DEPLOYMENT.md) - Server deployment instructions
+- [Engineering Roadmap](./ROADMAP.md) - Code review master plan and epic status
+- [Epic 0 Execution Plan](./EPIC_0_EXECUTION_PLAN.md) - Production migration plan
+- [ADR-0001](./adr/0001-separate-production-vps.md) - Separate production VPS decision
 - [Changelog](./CHANGELOG.md) - Version history
 - [Development Guide](./DEVELOPMENT.md) - Developer documentation
 
