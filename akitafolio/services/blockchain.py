@@ -11,6 +11,7 @@ from web3 import Web3
 from akitafolio.cache import balance_cache, cached
 from akitafolio.config import settings
 from akitafolio.exceptions import ValidationError
+from akitafolio.limits import rpc_executor
 from akitafolio.models import AggregatedBalance, ChainBalance
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,14 @@ class BlockchainService:
         """Get or create Web3 instances for all chains."""
         if cls._web3_instances is None:
             all_chains = settings.get_all_chains()
-            cls._web3_instances = {
-                chain: Web3(Web3.HTTPProvider(config["rpc_url"]))
-                for chain, config in all_chains.items()
-            }
+            instances = {}
+            for chain, config in all_chains.items():
+                provider = Web3.HTTPProvider(config["rpc_url"], request_kwargs={"timeout": 10})
+                # The bot does not need EIP-3668 off-chain lookups. Disabling
+                # them prevents user-provided contracts from triggering HTTP fetches.
+                provider.global_ccip_read_enabled = False
+                instances[chain] = Web3(provider)
+            cls._web3_instances = instances
         return cls._web3_instances
 
     @staticmethod
@@ -71,7 +76,7 @@ class BlockchainService:
             w3 = cls.get_web3_instances()[chain]
 
             checksum_addr = Web3.to_checksum_address(address)
-            balance_wei = w3.eth.get_balance(checksum_addr)
+            balance_wei = await rpc_executor.run(w3.eth.get_balance, checksum_addr)
             balance = float(w3.from_wei(balance_wei, "ether"))
 
             return ChainBalance(
@@ -118,8 +123,12 @@ class BlockchainService:
             if result.counts_as_eth and result.error is None:
                 total_eth += result.balance
 
+        errors = [balance.error for balance in chain_balances if balance.error]
         return AggregatedBalance(
-            address=address, total_eth=total_eth, chain_balances=chain_balances
+            address=address,
+            total_eth=total_eth,
+            chain_balances=chain_balances,
+            error="Some network balances are unavailable" if errors else None,
         )
 
     @classmethod

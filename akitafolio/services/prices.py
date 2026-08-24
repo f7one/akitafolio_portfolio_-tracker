@@ -30,7 +30,7 @@ class PriceService:
             )
         except Exception as e:
             logger.error(f"Error fetching crypto prices: {e}")
-            return CryptoPrices()
+            return CryptoPrices(error="Price data is temporarily unavailable")
 
     @staticmethod
     @cached(cache=price_cache, ttl=30.0, key_prefix="token_price")
@@ -42,7 +42,7 @@ class PriceService:
             return float(data.get(coingecko_id, {}).get("usd", 0))
         except Exception as e:
             logger.error(f"Error fetching price for {coingecko_id}: {e}")
-            return 0.0
+            raise
 
     @staticmethod
     @cached(cache=price_cache, ttl=60.0, key_prefix="multi_prices")

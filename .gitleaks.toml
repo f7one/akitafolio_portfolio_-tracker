@@ -1,0 +1,7 @@
+title = "Akitafolio secret scanning policy"
+
+[allowlist]
+description = "The local environment file is ignored by Git and is scanned by neither CI nor source review."
+paths = [
+  '''(^|/)\.env$''',
+]

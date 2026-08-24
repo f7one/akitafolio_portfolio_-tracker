@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_calls_per_second: float = Field(default=10.0)
     rate_limit_burst_size: int = Field(default=20)
+    user_requests_per_minute: int = Field(default=6)
+    user_request_burst_size: int = Field(default=2)
+    rpc_max_concurrency: int = Field(default=8)
+    max_eth_addresses: int = Field(default=5)
+    max_btc_addresses: int = Field(default=10)
+    max_xpubs: int = Field(default=2)
+    max_custom_tokens: int = Field(default=10)
 
     # Cache TTLs (in seconds)
     cache_ttl_prices: float = Field(default=30.0)

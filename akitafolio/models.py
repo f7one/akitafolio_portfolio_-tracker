@@ -158,6 +158,7 @@ class TokenPortfolio(BaseModel):
     top_holdings: List[TokenBalance] = Field(default_factory=list)
     hidden_dust_count: int = 0
     hidden_dust_value_usd: float = 0.0
+    errors: List[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -194,6 +195,7 @@ class DefiPortfolio(BaseModel):
     total_net_value_usd: float = 0.0
     position_count: int = 0
     positions: List[DefiPosition] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -207,6 +209,7 @@ class CryptoPrices(BaseModel):
     eth: float = 0.0
     btc: float = 0.0
     timestamp: datetime = Field(default_factory=datetime.now)
+    error: Optional[str] = None
 
 
 class PortfolioSnapshot(BaseModel):
@@ -246,6 +249,8 @@ class Portfolio(BaseModel):
     tokens: Optional[TokenPortfolio] = None
     defi: Optional[DefiPortfolio] = None
     change_24h: Optional[PortfolioChange] = None
+    errors: List[str] = Field(default_factory=list)
+    is_complete: bool = True
 
 
 # ============================================================================

@@ -6,11 +6,13 @@ for data fetching and business logic.
 """
 
 import logging
+from functools import wraps
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from akitafolio.config import settings
+from akitafolio.limits import user_request_limiter
 from akitafolio.models import Portfolio, PortfolioChange, TokenPortfolio
 from akitafolio.services.bitcoin import BitcoinService
 from akitafolio.services.blockchain import BlockchainService
@@ -21,6 +23,26 @@ from akitafolio.services.tokens import TokenService
 from akitafolio.storage import load_user_addresses, save_user_addresses
 
 logger = logging.getLogger(__name__)
+
+
+def guard_expensive_command(handler):
+    """Reject bursty or concurrent expensive requests without retaining user data."""
+
+    @wraps(handler)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user is None or not await user_request_limiter.try_acquire(user.id):
+            await update.message.reply_text(
+                "⏳ A portfolio request is already running or the request limit was reached. "
+                "Please wait a moment."
+            )
+            return
+        try:
+            return await handler(update, context)
+        finally:
+            await user_request_limiter.release(user.id)
+
+    return wrapper
 
 
 # ============================================================================
@@ -189,6 +211,7 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================================
 
 
+@guard_expensive_command
 async def eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check ETH balance across all chains."""
     if not context.args:
@@ -207,7 +230,7 @@ async def eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prices = await PriceService.get_crypto_prices()
 
     if result.error:
-        await processing_msg.edit_text(f"❌ Error: {result.error}")
+        await processing_msg.edit_text("❌ Balance data is temporarily unavailable.")
         return
 
     # Build response
@@ -234,6 +257,7 @@ async def eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.edit_text(response, parse_mode="Markdown")
 
 
+@guard_expensive_command
 async def btc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check Bitcoin balance."""
     if not context.args:
@@ -268,6 +292,7 @@ async def btc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.edit_text(response, parse_mode="Markdown")
 
 
+@guard_expensive_command
 async def xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check HD wallet balance using xpub."""
     if not context.args:
@@ -330,6 +355,12 @@ async def add_eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_user_addresses(user_id)
 
+    if len(context.args) > settings.max_eth_addresses:
+        await update.message.reply_text(
+            f"❌ Add at most {settings.max_eth_addresses} ETH addresses at once."
+        )
+        return
+
     added = []
     skipped = []
     invalid = []
@@ -342,9 +373,11 @@ async def add_eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         checksum_addr = BlockchainService.checksum_address(addr)
         if checksum_addr in addresses.eth:
             skipped.append(addr)
-        else:
+        elif len(addresses.eth) < settings.max_eth_addresses:
             addresses.eth.append(checksum_addr)
             added.append(checksum_addr)
+        else:
+            skipped.append(addr)
 
     if added:
         save_user_addresses(user_id, addresses)
@@ -373,6 +406,12 @@ async def add_btc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_user_addresses(user_id)
 
+    if len(context.args) > settings.max_eth_addresses:
+        await update.message.reply_text(
+            f"❌ Add at most {settings.max_eth_addresses} BTC addresses at once."
+        )
+        return
+
     added = []
     skipped = []
     invalid = []
@@ -384,9 +423,11 @@ async def add_btc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if addr in addresses.btc:
             skipped.append(addr)
-        else:
+        elif len(addresses.btc) < settings.max_btc_addresses:
             addresses.btc.append(addr)
             added.append(addr)
+        else:
+            skipped.append(addr)
 
     if added:
         save_user_addresses(user_id, addresses)
@@ -415,6 +456,10 @@ async def add_xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_user_addresses(user_id)
 
+    if len(context.args) > settings.max_xpubs:
+        await update.message.reply_text(f"❌ Add at most {settings.max_xpubs} xpub keys at once.")
+        return
+
     added = []
     skipped = []
     invalid = []
@@ -426,9 +471,11 @@ async def add_xpub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if xpub in addresses.xpub:
             skipped.append(xpub)
-        else:
+        elif len(addresses.xpub) < settings.max_xpubs:
             addresses.xpub.append(xpub)
             added.append(xpub)
+        else:
+            skipped.append(xpub)
 
     if added:
         save_user_addresses(user_id, addresses)
@@ -620,6 +667,7 @@ def format_tokens_message(token_portfolio: TokenPortfolio) -> str:
     return response
 
 
+@guard_expensive_command
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show complete portfolio value."""
     user_id = update.effective_user.id
@@ -641,13 +689,20 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         addresses, include_tokens=True, include_defi=addresses.track_defi
     )
 
-    # Calculate 24h change
-    change = PortfolioService.calculate_24h_change(user_id, portfolio.total_portfolio_usd)
-
-    # Save snapshot
-    PortfolioService.save_snapshot(user_id, portfolio)
+    # Never turn incomplete upstream data into a misleading historical snapshot.
+    change = (
+        PortfolioService.calculate_24h_change(user_id, portfolio.total_portfolio_usd)
+        if portfolio.is_complete
+        else PortfolioChange(has_data=False)
+    )
+    if portfolio.is_complete:
+        PortfolioService.save_snapshot(user_id, portfolio)
 
     response = format_portfolio_message(portfolio, change)
+    if not portfolio.is_complete:
+        response += (
+            "\n\n⚠️ Some data is temporarily unavailable; this result was not saved to history."
+        )
     await processing_msg.edit_text(response, parse_mode="Markdown")
 
 
@@ -656,6 +711,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================================
 
 
+@guard_expensive_command
 async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all ERC20 token balances."""
     user_id = update.effective_user.id
@@ -672,13 +728,17 @@ async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token_portfolio = await TokenService.get_all_token_balances(addresses.eth, addresses.tokens)
 
     if token_portfolio.token_count == 0:
-        await processing_msg.edit_text("📊 No token balances found.")
+        message = "📊 No token balances found."
+        if token_portfolio.errors:
+            message = "⚠️ Token data is temporarily unavailable."
+        await processing_msg.edit_text(message)
         return
 
     response = format_tokens_message(token_portfolio)
     await processing_msg.edit_text(response, parse_mode="Markdown")
 
 
+@guard_expensive_command
 async def defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show DeFi positions."""
     user_id = update.effective_user.id
@@ -695,7 +755,10 @@ async def defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     defi_portfolio = await DefiService.get_all_defi_positions(addresses.eth)
 
     if defi_portfolio.position_count == 0:
-        await processing_msg.edit_text("📊 No DeFi positions found.")
+        message = "📊 No DeFi positions found."
+        if defi_portfolio.errors:
+            message = "⚠️ DeFi data is temporarily unavailable."
+        await processing_msg.edit_text(message)
         return
 
     response = "🏦 **YOUR DeFi POSITIONS**\n\n"
@@ -718,6 +781,7 @@ async def defi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.edit_text(response, parse_mode="Markdown")
 
 
+@guard_expensive_command
 async def add_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add custom token to track."""
     if len(context.args) < 3:
@@ -744,19 +808,44 @@ async def add_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     addresses = load_user_addresses(user_id)
 
+    token_checksum = BlockchainService.checksum_address(token_address)
+    token_key = (chain, token_checksum.lower())
+    existing_keys = {
+        (item.get("chain", "").lower(), item.get("address", "").lower())
+        for item in addresses.tokens
+    }
+    if token_key in existing_keys:
+        await update.message.reply_text("ℹ️ This token is already tracked.")
+        return
+    if len(addresses.tokens) >= settings.max_custom_tokens:
+        await update.message.reply_text(
+            f"❌ You can track at most {settings.max_custom_tokens} custom tokens."
+        )
+        return
+
+    try:
+        decimals, symbol = await TokenService.get_token_metadata(token_checksum, chain)
+    except Exception:
+        logger.warning("Could not verify a user-provided token contract")
+        await update.message.reply_text("❌ Could not verify token metadata on this network.")
+        return
+
     new_token = {
         "chain": chain,
-        "address": BlockchainService.checksum_address(token_address),
+        "address": token_checksum,
         "coingecko_id": coingecko_id,
-        "decimals": 18,  # Default, will be auto-detected
-        "symbol": coingecko_id.upper(),
+        "decimals": decimals,
+        "symbol": symbol,
     }
 
     addresses.tokens.append(new_token)
     save_user_addresses(user_id, addresses)
 
     await update.message.reply_text(
-        f"✅ Added custom token!\n" f"Chain: {chain}\n" f"CoinGecko ID: {coingecko_id}"
+        f"✅ Added custom token!\n"
+        f"Chain: {chain}\n"
+        f"Symbol: {symbol}\n"
+        f"CoinGecko ID: {coingecko_id}"
     )
 
 

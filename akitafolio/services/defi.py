@@ -10,6 +10,7 @@ from web3 import Web3
 
 from akitafolio.cache import cached, defi_cache
 from akitafolio.config import settings
+from akitafolio.limits import rpc_executor
 from akitafolio.models import DefiPortfolio, DefiPosition
 from akitafolio.services.blockchain import BlockchainService
 
@@ -80,7 +81,9 @@ class DefiService:
             )
 
             checksum_addr = Web3.to_checksum_address(address)
-            account_data = pool_contract.functions.getUserAccountData(checksum_addr).call()
+            account_data = await rpc_executor.run(
+                pool_contract.functions.getUserAccountData(checksum_addr).call
+            )
 
             # Parse response (values are in 8 decimal base currency - USD)
             collateral_usd = account_data[0] / 1e8
@@ -122,12 +125,15 @@ class DefiService:
                 tasks.append(cls.get_aave_v3_position(address, chain))
 
         positions: List[DefiPosition] = []
+        errors: List[str] = []
 
         if tasks:
             results = await asyncio.gather(*tasks)
 
             # Filter to positions with actual value
             for result in results:
+                if result.error:
+                    errors.append(result.error)
                 if result.has_position and result.error is None:
                     positions.append(result)
 
@@ -142,4 +148,5 @@ class DefiService:
             total_net_value_usd=total_net,
             position_count=len(positions),
             positions=positions,
+            errors=errors,
         )

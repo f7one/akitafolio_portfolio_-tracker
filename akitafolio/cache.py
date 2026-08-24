@@ -57,7 +57,7 @@ class TTLCache:
     def _generate_key(self, *args, **kwargs) -> str:
         """Generate cache key from arguments."""
         key_data = f"{args}:{sorted(kwargs.items())}"
-        return hashlib.md5(key_data.encode()).hexdigest()
+        return hashlib.sha256(key_data.encode()).hexdigest()
 
     async def get(self, key: str) -> Optional[Any]:
         """Get value from cache."""
@@ -147,7 +147,7 @@ def cached(cache: TTLCache, ttl: Optional[float] = None, key_prefix: str = ""):
         async def wrapper(*args, **kwargs) -> T:
             # Generate cache key
             key_data = f"{key_prefix}:{func.__name__}:{args}:{sorted(kwargs.items())}"
-            cache_key = hashlib.md5(key_data.encode()).hexdigest()
+            cache_key = hashlib.sha256(key_data.encode()).hexdigest()
 
             # Try to get from cache
             cached_value = await cache.get(cache_key)

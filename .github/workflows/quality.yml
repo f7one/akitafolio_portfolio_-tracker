@@ -29,3 +29,9 @@ jobs:
         run: uv run mypy
       - name: Test with coverage
         run: uv run pytest --cov --cov-report=term-missing
+      - name: Audit dependencies
+        # PYSEC-2026-1325 is transitive through hdwallet and has no patched
+        # release. The bot processes public xpubs only and does not sign keys.
+        run: uv run pip-audit --ignore-vuln PYSEC-2026-1325
+      - name: Static security analysis
+        run: uv run bandit -r akitafolio

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Try to import hdwallet for address derivation
 try:
     from hdwallet import HDWallet
-    from hdwallet.symbols import BTC
+    from hdwallet.cryptocurrencies import Bitcoin
 
     HDWALLET_AVAILABLE = True
 except ImportError:
@@ -195,7 +195,7 @@ def derive_addresses_from_xpub(
 
         # Derive receive addresses (external chain, index 0)
         for i in range(count):
-            hdwallet = HDWallet(symbol=BTC)
+            hdwallet = HDWallet(cryptocurrency=Bitcoin)
             hdwallet.from_xpublic_key(xpublic_key=normalized_xpub)
             # Derive m/0/i (receive addresses)
             hdwallet.from_index(0)  # External chain
@@ -216,7 +216,7 @@ def derive_addresses_from_xpub(
 
         # Also derive change addresses (internal chain, index 1)
         for i in range(count // 2):  # Fewer change addresses
-            hdwallet = HDWallet(symbol=BTC)
+            hdwallet = HDWallet(cryptocurrency=Bitcoin)
             hdwallet.from_xpublic_key(xpublic_key=normalized_xpub)
             # Derive m/1/i (change addresses)
             hdwallet.from_index(1)  # Internal chain (change)

@@ -72,12 +72,17 @@ class PortfolioService:
 
         # Wait for all tasks
         results = {}
+        errors: list[str] = []
         for name, task in tasks.items():
             try:
                 results[name] = await task
-            except Exception as e:
-                logger.error(f"Error fetching {name}: {e}")
+            except Exception:
+                logger.error("Error fetching portfolio source: %s", name)
                 results[name] = None
+                errors.append(f"{name} data is unavailable")
+
+        if prices.error:
+            errors.append(prices.error)
 
         # Process ETH results
         total_eth = 0.0
@@ -85,6 +90,8 @@ class PortfolioService:
 
         if "eth" in results and results["eth"]:
             for addr_result in results["eth"]:
+                if addr_result.error:
+                    errors.append("Some network balances are unavailable")
                 if addr_result.error is None:
                     total_eth += addr_result.total_eth
                     chain_balances.extend(addr_result.chain_balances)
@@ -95,6 +102,8 @@ class PortfolioService:
 
         if "btc" in results and results["btc"]:
             btc_data = results["btc"]
+            if btc_data.get("errors"):
+                errors.append("Some Bitcoin balances are unavailable")
             total_btc_single = btc_data.get("total_single", 0)
             total_btc_xpub = btc_data.get("total_xpub", 0)
 
@@ -109,12 +118,16 @@ class PortfolioService:
         tokens: Optional[TokenPortfolio] = None
         if "tokens" in results and results["tokens"]:
             tokens = results["tokens"]
+            if tokens.errors:
+                errors.append("Some token balances are unavailable")
             total_portfolio_usd += tokens.total_value_usd
 
         # Process DeFi
         defi: Optional[DefiPortfolio] = None
         if "defi" in results and results["defi"]:
             defi = results["defi"]
+            if defi.errors:
+                errors.append("Some DeFi positions are unavailable")
             total_portfolio_usd += defi.total_net_value_usd
 
         return Portfolio(
@@ -130,6 +143,8 @@ class PortfolioService:
             chain_balances=chain_balances,
             tokens=tokens,
             defi=defi,
+            errors=list(dict.fromkeys(errors)),
+            is_complete=not errors,
         )
 
     @classmethod

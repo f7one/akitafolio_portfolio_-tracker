@@ -47,7 +47,14 @@ uv run ruff check .
 uv run mypy
 uv run pytest --cov
 uv run pre-commit run --all-files
+# Security checks (the one documented transitive exception is handled in CI)
+uv run pip-audit --ignore-vuln PYSEC-2026-1325
+uv run bandit -r akitafolio
+gitleaks dir . --redact
 ```
+
+`gitleaks` intentionally ignores only the local, Git-ignored `.env` file. Do
+not put secrets in test fixtures, commands or documentation.
 
 ---
 

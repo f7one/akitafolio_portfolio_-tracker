@@ -3,6 +3,7 @@ HTTP client with rate limiting and retry logic for Akitafolio.
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -218,6 +219,23 @@ class HTTPClient:
 
     _session: Optional[aiohttp.ClientSession] = None
     _rate_limiter: Optional[RateLimiter] = None
+    max_response_bytes = 1_048_576
+    max_retry_after_seconds = 30
+
+    @classmethod
+    def _retry_after_seconds(cls, value: Optional[str]) -> int:
+        """Accept only a small bounded Retry-After delay from an upstream server."""
+        try:
+            return min(cls.max_retry_after_seconds, max(0, int(value or 5)))
+        except ValueError:
+            return 5
+
+    @classmethod
+    async def _read_limited(cls, response: aiohttp.ClientResponse) -> bytes:
+        body = await response.content.read(cls.max_response_bytes + 1)
+        if len(body) > cls.max_response_bytes:
+            raise APIError("Upstream response is too large")
+        return body
 
     @classmethod
     def _get_rate_limiter(cls) -> RateLimiter:
@@ -256,12 +274,13 @@ class HTTPClient:
         try:
             async with session.get(url, timeout=TimeoutConfig.get_timeout(timeout)) as response:
                 if response.status == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
+                    retry_after = cls._retry_after_seconds(response.headers.get("Retry-After"))
                     logger.warning(f"Rate limited by server, waiting {retry_after}s")
                     await asyncio.sleep(retry_after)
                     raise aiohttp.ClientError("Rate limited, retry")
                 response.raise_for_status()
-                return await response.json()
+                body = await cls._read_limited(response)
+                return json.loads(body.decode(response.charset or "utf-8"))
         except aiohttp.ContentTypeError as e:
             logger.error(f"Invalid JSON response from {url}: {e}")
             raise APIError(f"Invalid JSON response: {e}") from e
@@ -278,12 +297,12 @@ class HTTPClient:
         try:
             async with session.get(url, timeout=TimeoutConfig.get_timeout(timeout)) as response:
                 if response.status == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
+                    retry_after = cls._retry_after_seconds(response.headers.get("Retry-After"))
                     logger.warning(f"Rate limited by server, waiting {retry_after}s")
                     await asyncio.sleep(retry_after)
                     raise aiohttp.ClientError("Rate limited, retry")
                 response.raise_for_status()
-                return await response.text()
+                return (await cls._read_limited(response)).decode(response.charset or "utf-8")
         except aiohttp.ClientError as e:
             logger.error(f"HTTP error for {url}: {e}")
             raise APIError(f"HTTP request failed: {e}") from e

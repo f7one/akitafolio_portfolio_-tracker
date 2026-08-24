@@ -10,6 +10,7 @@ from web3 import Web3
 
 from akitafolio.cache import cached, token_cache
 from akitafolio.config import settings
+from akitafolio.limits import rpc_executor
 from akitafolio.models import TokenBalance, TokenPortfolio
 from akitafolio.services.blockchain import BlockchainService
 from akitafolio.services.prices import PriceService
@@ -75,7 +76,7 @@ class TokenService:
             token_checksum = Web3.to_checksum_address(token_address)
 
             contract = w3.eth.contract(address=token_checksum, abi=ERC20_ABI)
-            balance_raw = contract.functions.balanceOf(checksum_addr).call()
+            balance_raw = await rpc_executor.run(contract.functions.balanceOf(checksum_addr).call)
             balance = balance_raw / (10**decimals)
 
             # Get price if balance > 0
@@ -124,10 +125,16 @@ class TokenService:
                 ):
                     tokens_to_check.append(token)
 
-        # Fetch all balances in parallel
+        # Trust configured defaults over custom duplicates and avoid duplicate RPC calls.
+        unique_tokens: dict[tuple[str, str], Dict] = {}
+        for token in tokens_to_check:
+            key = (token["chain"].lower(), token["address"].lower())
+            unique_tokens.setdefault(key, token)
+
+        # Fetch all balances in parallel; the RPC executor bounds blocking calls.
         tasks = []
         for address in addresses:
-            for token in tokens_to_check:
+            for token in unique_tokens.values():
                 tasks.append(
                     cls.get_token_balance(
                         address=address,
@@ -139,8 +146,10 @@ class TokenService:
                     )
                 )
 
+        errors: list[str] = []
         if tasks:
             results = await asyncio.gather(*tasks)
+            errors = [result.error for result in results if result.error]
 
             # Aggregate by token (sum balances across addresses)
             token_aggregated: Dict[str, TokenBalance] = {}
@@ -185,4 +194,23 @@ class TokenService:
             top_holdings=top_holdings,
             hidden_dust_count=len(dust_tokens),
             hidden_dust_value_usd=hidden_dust_value,
+            errors=errors,
         )
+
+    @classmethod
+    async def get_token_metadata(cls, token_address: str, chain: str) -> tuple[int, str]:
+        """Read token metadata once before persisting a user-provided contract."""
+        web3_instances = BlockchainService.get_web3_instances()
+        if chain not in web3_instances:
+            raise ValueError("Unsupported chain")
+        token_checksum = Web3.to_checksum_address(token_address)
+        contract = web3_instances[chain].eth.contract(address=token_checksum, abi=ERC20_ABI)
+        decimals, symbol = await asyncio.gather(
+            rpc_executor.run(contract.functions.decimals().call),
+            rpc_executor.run(contract.functions.symbol().call),
+        )
+        if not isinstance(decimals, int) or not 0 <= decimals <= 36:
+            raise ValueError("Token contract returned unsupported decimals")
+        if not isinstance(symbol, str) or not symbol.strip() or len(symbol) > 32:
+            raise ValueError("Token contract returned unsupported symbol")
+        return decimals, symbol.strip()

@@ -4,11 +4,10 @@
 обновляются по мере выполнения; коммиты и переход к следующему эпику делаются
 только после ревью владельца.
 
-**Последнее обновление:** 2026-08-23. Epic 0 выполняется на
-`72.56.120.66` (Timeweb Cloud). Cutover принят владельцем: новый service
-запущен, прежний остановлен. Удаление старой установки отложено на rollback
-window. Подробный порядок работ,
-точки контроля и rollback описаны в [плане исполнения](EPIC_0_EXECUTION_PLAN.md).
+**Последнее обновление:** 2026-08-24. Epic 0 завершён; Epic 1 отправлен в
+canonical GitHub-репозиторий. Epic 2 начат с инвентаризации security toolchain
+и зависимостей. Подробный порядок работ, точки контроля и решения, требующие
+подтверждения владельца, — в [плане Epic 2](EPIC_2_EXECUTION_PLAN.md).
 
 Статусы: `planned`, `in progress`, `blocked`, `done`.
 
@@ -91,22 +90,32 @@ initial scope (`akitafolio/models.py` и `tests`); расширение type cov
 
 ## Epic 2 — P1 security и correctness
 
-**Статус:** blocked by Epic 1
+**Статус:** done
+**План исполнения:** [EPIC_2_EXECUTION_PLAN.md](EPIC_2_EXECUTION_PLAN.md)
+**Решение:** [ADR-0003](adr/0003-public-bot-safety-limits-and-no-ccip.md)
 
-- [ ] Обновить уязвимые зависимости с compatibility tests: web3, aiohttp,
+- [x] Провести read-only инвентаризацию и добавить SCA/SAST baseline: project-local
+  `pip-audit`/Bandit и локальный Gitleaks; Semgrep/OSV Scanner не требуются для
+  минимального гейта. Текущие credentials оставлены владельцем как residual risk.
+- [x] E2-T1. Обновить уязвимые зависимости с compatibility tests: web3, aiohttp,
   requests, python-dotenv, hdwallet и click.
-- [ ] Отключить или безопасно ограничить web3 CCIP Read для пользовательских
+- [x] E2-T2. Отключить CCIP Read для пользовательских
   контрактов; протестировать SSRF-сценарии.
-- [ ] Исправить decimals и дедупликацию custom ERC20 tokens.
-- [ ] Ввести per-user rate limits, квоты адресов/xpub/token и общий предел RPC
-  concurrency; вынести синхронные Web3-вызовы из event loop.
-- [ ] Перестать превращать ошибки upstream API в нулевые балансы и не записывать
-  такие результаты в историю.
-- [ ] Исправить фильтрацию секретов во всех логгерах и ограничить размер HTTP
-  ответа/`Retry-After`.
+- [x] E2-T3. Исправить decimals и дедупликацию custom ERC20 tokens.
+- [x] E2-T4. Ввести per-user rate limits, квоты адресов/xpub/token и общий предел
+  RPC concurrency; вынести синхронные Web3-вызовы из event loop.
+- [x] E2-T5. Перестать превращать ошибки upstream API в нулевые балансы и не
+  записывать такие результаты в историю.
+- [x] E2-T6. Исправить фильтрацию секретов во всех логгерах и ограничить размер
+  HTTP-ответа/`Retry-After`.
+- [x] E2-T7. Провести полные SAST/SCA/regression tests, обновить документацию и
+  представить единый diff на ревью перед commit.
 
-**Блокер:** для полного SAST/SCA отсутствуют `bandit`, `semgrep`, `pip-audit` или
-подключённый Codex Security plugin.
+**Остаточный риск:** `pip-audit` показывает только документированное исключение
+`PYSEC-2026-1325` в транзитивном `ecdsa`, для которого нет patch; оно принято
+только потому, что бот не создаёт и не подписывает private EC keys. Текущие
+Telegram/Infura credentials владелец решил не ротировать после локального
+traceback. Оба риска имеют owner и срок пересмотра в плане Epic 2.
 
 ## Epic 3 — целостность хранения и эксплуатационная устойчивость
 
